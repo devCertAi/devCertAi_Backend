@@ -1,0 +1,53 @@
+{
+  "name": "devcert-server",
+  "version": "1.0.0",
+  "description": "DevCert - AI-powered skill certification platform backend",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "db:migrate": "npx prisma migrate dev",
+    "db:push": "npx prisma db push",
+    "db:seed": "node prisma/seed.js",
+    "db:studio": "npx prisma studio",
+    "db:reset": "npx prisma migrate reset"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.3",
+    "@google/generative-ai": "^0.15.0",
+    "@mistralai/mistralai": "^1.15.1",
+    "@prisma/client": "^5.22.0",
+    "adm-zip": "^0.5.17",
+    "axios": "^1.17.0",
+    "bcryptjs": "^2.4.3",
+    "bull": "^4.16.5",
+    "cloudinary": "^2.10.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "express-rate-limit": "^7.5.1",
+    "google-auth-library": "^9.15.1",
+    "groq-sdk": "^0.5.0",
+    "helmet": "^7.2.0",
+    "ioredis": "^5.11.1",
+    "jsonwebtoken": "^9.0.3",
+    "morgan": "^1.11.0",
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^4.5.0",
+    "nodemailer": "^6.10.1",
+    "openai": "^4.104.0",
+    "puppeteer": "^22.15.0",
+    "razorpay": "^2.9.6",
+    "socket.io": "^4.8.3",
+    "streamifier": "^0.1.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4",
+    "prisma": "^5.15.0"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  }
+}
