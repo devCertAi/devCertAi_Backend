@@ -7,27 +7,90 @@ const asyncHandler = require('../utils/asyncHandler')
 // No isQueueAvailable() branching needed here; always go through the queue.
 const queues = require('../queues')
 const { defaultOpts } = queues
-const { getPhase1Questions, hasPassedPhase1 } = require('../services/examService')
+const { getPhase1Questions } = require('../services/examService')
 const { generatePhase2Questions } = require('../ai/evaluationEngine')
-const { analyzeGithubRepo } = require('../ai/githubAnalyzer')
+const { analyzeGithubRepo, classifyRepoDomain, domainsAreCompatible } = require('../ai/githubAnalyzer')
+const { analyzeZip } = require('../ai/zipAnalyzer')
 const creditService = require('../services/creditService')
+const multer = require('multer')
+const fs = require('fs')
+const path = require('path')
+const os = require('os')
+const {
+  EXAM_CATEGORIES,
+  DIFFICULTY_CONFIG,
+  computeTimeLimit,
+  MIN_QUESTIONS,
+  MAX_QUESTIONS,
+  DEFAULT_QUESTIONS,
+  BASE_BUFFER_SEC,
+  PHASE2_DIFFICULTY_CONFIG,
+  PHASE2_MIN_QUESTIONS,
+  PHASE2_MAX_QUESTIONS,
+  PHASE2_DEFAULT_QUESTIONS,
+  computePhase2TimeLimit,
+} = require('../config/examCategories')
+
+// Phase 2 project ZIP upload — same memory-storage pattern used in
+// projectController.js. Kept here (rather than shared) since the exam route
+// wires it directly via `upload.single('zipFile')`.
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } })
+
+// POST /check-github-domain
+// Combo (Phase 1 + Phase 2 in one flow) needs to validate the candidate's
+// GitHub repo BEFORE Phase 1 even starts — otherwise they could pass Phase 1,
+// burn a Phase 2 credit, and only then discover the repo doesn't match the
+// domain. This reuses the same analyzeGithubRepo/classifyRepoDomain/
+// domainsAreCompatible pipeline the standalone Phase 2 submission uses, but
+// doesn't create or touch any exam attempt — it's a pure pre-check.
+const checkGithubDomain = asyncHandler(async (req, res) => {
+  const { domain, githubUrl } = req.body
+  if (!domain) throw new ApiError(400, 'domain is required')
+  if (!githubUrl || !githubUrl.trim()) throw new ApiError(400, 'githubUrl is required')
+
+  let context
+  try {
+    context = await analyzeGithubRepo(githubUrl.trim())
+  } catch (err) {
+    throw new ApiError(400, `Could not analyze that repository: ${err.message}`)
+  }
+
+  const detected = classifyRepoDomain(context)
+  const compatible = domainsAreCompatible(domain, detected)
+
+  return res.status(200).json(new ApiResponse(200, {
+    compatible,
+    detectedDomain: detected.domain,
+    message: compatible
+      ? 'Repo matches the selected domain.'
+      : `This repo looks like ${detected.domain}, not ${domain}. A certificate can only be earned when the repo's domain matches your exam domain.`
+  }))
+})
 
 // POST /start
 const startExam = asyncHandler(async (req, res) => {
-  const { domain, phase } = req.body
+  const { domain, phase, category, difficulty = 'medium', questionCount = 25 } = req.body
   const userId = req.user.id
 
-  // Phase 2 requires phase 1 pass for same domain
-  if (phase === 2) {
-    const passed = await hasPassedPhase1(userId, domain)
-    if (!passed) throw new ApiError(400, `You must pass Phase 1 for ${domain} before attempting Phase 2`)
-  }
+  // Phase 2 no longer requires passing Phase 1 first — both phases are
+  // independently accessible for any domain (Frontend/Backend/Full Stack/etc).
 
-  // Check for any in-progress attempt
+  // Check for any in-progress attempt. Previously this just threw a 400 and
+  // relied on the frontend to resume it — but that meant a candidate who
+  // picked a NEW config (different questionCount/difficulty) on a retry
+  // would silently get dropped back into their OLD attempt with the OLD
+  // settings (wrong question count, wrong time limit) instead of the exam
+  // they just configured. A fresh "Start" click is always an intentional
+  // restart, so we abandon the stale attempt and create a new one instead.
   const inProgress = await prisma.examAttempt.findFirst({
     where: { userId, domain, phase, status: { in: ['pending', 'in_progress'] } }
   })
-  if (inProgress) throw new ApiError(400, 'You already have an in-progress exam attempt for this domain and phase')
+  if (inProgress) {
+    await prisma.examAttempt.update({
+      where: { id: inProgress.id },
+      data: { status: 'abandoned', submittedAt: new Date() }
+    })
+  }
 
   // Credit gate — self-serve certification attempts only.
   // Phase 1 costs 1 skill credit. Phase 2 also costs 1 skill credit.
@@ -37,8 +100,22 @@ const startExam = asyncHandler(async (req, res) => {
   }
 
   let questions = []
+
+  // Phase 1: time scales with question count + difficulty (harder = more
+  // time per question). Phase 2: candidate still picks difficulty + how many
+  // AI-generated questions they want (3-10) — that also drives the time
+  // limit — but the questions themselves aren't generated until the
+  // candidate submits their GitHub URL / ZIP via /phase2/project.
+  const phase2QuestionCount = Math.max(
+    PHASE2_MIN_QUESTIONS,
+    Math.min(PHASE2_MAX_QUESTIONS, Number(questionCount) || PHASE2_DEFAULT_QUESTIONS)
+  )
+  const timeLimitSec = phase === 1
+    ? computeTimeLimit(difficulty, questionCount)
+    : computePhase2TimeLimit(difficulty, phase2QuestionCount)
+
   if (phase === 1) {
-    questions = await getPhase1Questions(domain, 25)
+    questions = await getPhase1Questions(domain, questionCount, category, difficulty)
   }
   // Phase 2 questions generated after project is submitted via /phase2/project
 
@@ -48,10 +125,14 @@ const startExam = asyncHandler(async (req, res) => {
       domain,
       phase,
       status: 'in_progress',
+      category: phase === 1 ? category : null,
+      level: difficulty,
+      difficulty, // stable copy — `level` gets overwritten with the post-grading proficiency tier
+      questionCount: phase === 1 ? questions.length : phase2QuestionCount,
       questions,
       answers: {},
       startedAt: new Date(),
-      timeLimitSec: phase === 1 ? 2700 : 3600, // 45min phase1, 60min phase2
+      timeLimitSec,
       proctorFlags: []
     }
   })
@@ -66,14 +147,17 @@ const startExam = asyncHandler(async (req, res) => {
     questions: safeQuestions,
     timeLimitSec: attempt.timeLimitSec,
     domain,
-    phase
+    phase,
+    category: attempt.category,
+    difficulty: attempt.level,
+    questionCount: attempt.questionCount
   }))
 })
 
 // POST /demo/start — free practice attempt, unlimited, no certificate.
 // Lets a user try the exam experience before spending their monthly credit.
 const startDemoExam = asyncHandler(async (req, res) => {
-  const { domain } = req.body
+  const { domain, category } = req.body
   const userId = req.user.id
 
   const inProgress = await prisma.examAttempt.findFirst({
@@ -81,7 +165,7 @@ const startDemoExam = asyncHandler(async (req, res) => {
   })
   if (inProgress) throw new ApiError(400, 'You already have an in-progress demo attempt for this domain')
 
-  const questions = await getPhase1Questions(domain, 5)
+  const questions = await getPhase1Questions(domain, 5, category, 'medium')
 
   const attempt = await prisma.examAttempt.create({
     data: {
@@ -89,6 +173,9 @@ const startDemoExam = asyncHandler(async (req, res) => {
       domain,
       phase: 1,
       status: 'in_progress',
+      category: category || null,
+      level: 'medium',
+      questionCount: questions.length,
       questions,
       answers: {},
       startedAt: new Date(),
@@ -113,17 +200,53 @@ const startDemoExam = asyncHandler(async (req, res) => {
 // GET /attempt/:id
 const getAttempt = asyncHandler(async (req, res) => {
   const attempt = await prisma.examAttempt.findFirst({
-    where: { id: req.params.id, userId: req.user.id }
+    where: { id: req.params.id, userId: req.user.id },
+    include: { certificate: { select: { id: true, verificationId: true } } }
   })
   if (!attempt) throw new ApiError(404, 'Attempt not found')
 
-  // Strip correct answers from questions for in-progress attempts
+  // Work out whether the OTHER phase (for this same domain) has already
+  // been completed by this user. The frontend needs this for two things:
+  //   1. Phase 2 lobby — only offer "Skip Phase 2 -> see Phase 1 result"
+  //      when a Phase 1 attempt for this domain actually exists. Phase 2
+  //      can be started completely standalone, so this is NOT always true.
+  //   2. Result page — only claim "Both Phases Passed" / combo-certificate
+  //      messaging when Phase 1 was genuinely passed too, instead of
+  //      assuming it every time Phase 2 is passed.
+  const otherPhase = attempt.phase === 1 ? 2 : 1
+  let otherPhaseInfo = null
+  if (attempt.source !== 'demo') {
+    const otherAttempts = await prisma.examAttempt.findMany({
+      where: {
+        userId: attempt.userId,
+        domain: attempt.domain,
+        phase: otherPhase,
+        status: 'completed',
+        source: { not: 'demo' }
+      },
+      orderBy: { totalScore: 'desc' },
+      select: { id: true, totalScore: true },
+      take: 1
+    })
+    const best = otherAttempts[0]
+    if (best) {
+      otherPhaseInfo = { attemptId: best.id, passed: (best.totalScore || 0) >= 50 }
+    }
+  }
+
+  // Strip correct answers from questions ONLY while the attempt is still
+  // active — once it's completed/terminated the candidate is reviewing
+  // their result, and the correct-answer breakdown is exactly what powers
+  // that review (see evaluationReport for Phase 1/2 wrong-answer detail).
+  const stillActive = attempt.status === 'in_progress' || attempt.status === 'pending'
   const safeAttempt = {
     ...attempt,
     questions: (attempt.questions || []).map(q => {
+      if (!stillActive) return q
       const { answer, ...safe } = q
       return safe
-    })
+    }),
+    otherPhase: otherPhaseInfo
   }
 
   return res.json(new ApiResponse(200, { attempt: safeAttempt }))
@@ -309,43 +432,134 @@ const heartbeat = asyncHandler(async (req, res) => {
 })
 
 // POST /attempt/:id/phase2/project
+// Accepts EITHER a GitHub repo URL OR an uploaded ZIP file for a single-stack
+// domain (req.body.githubUrl / req.files.zipFile) — exactly one is required.
+//
+// For the 'Full Stack' domain, one project isn't enough to probe both halves
+// of the stack, so this instead requires BOTH a frontend project AND a
+// backend project — each independently either a GitHub URL or a ZIP
+// (req.body.frontendGithubUrl/backendGithubUrl, req.files.frontendZip/backendZip).
+// Both are analyzed separately then merged into a single AI context so the
+// generated questions draw from the whole submission.
 const submitPhase2Project = asyncHandler(async (req, res) => {
-  const { githubUrl } = req.body
+  const { githubUrl, frontendGithubUrl, backendGithubUrl } = req.body
   const { id } = req.params
-
-  if (!githubUrl) throw new ApiError(400, 'GitHub URL is required for Phase 2')
+  const files = req.files || {}
 
   const attempt = await prisma.examAttempt.findFirst({
     where: { id, userId: req.user.id, phase: 2, status: 'in_progress' }
   })
   if (!attempt) throw new ApiError(404, 'Active Phase 2 attempt not found')
 
-  // Analyze repo and generate 6 project-specific questions
+  const isFullStack = attempt.domain === 'Full Stack'
+  const tmpFiles = []
   let context
+  let projectRef
+
   try {
-    context = await analyzeGithubRepo(githubUrl)
+    if (isFullStack) {
+      const frontendZip = files.frontendZip?.[0]
+      const backendZip = files.backendZip?.[0]
+
+      if (!frontendGithubUrl && !frontendZip) {
+        throw new ApiError(400, 'Provide a frontend GitHub URL or ZIP file')
+      }
+      if (frontendGithubUrl && frontendZip) {
+        throw new ApiError(400, 'Provide either a frontend GitHub URL or ZIP, not both')
+      }
+      if (!backendGithubUrl && !backendZip) {
+        throw new ApiError(400, 'Provide a backend GitHub URL or ZIP file')
+      }
+      if (backendGithubUrl && backendZip) {
+        throw new ApiError(400, 'Provide either a backend GitHub URL or ZIP, not both')
+      }
+
+      const [frontendContext, frontendRef] = await analyzeProjectSide('frontend', frontendGithubUrl, frontendZip, id, tmpFiles)
+      const [backendContext, backendRef] = await analyzeProjectSide('backend', backendGithubUrl, backendZip, id, tmpFiles)
+
+      context = mergeProjectContexts(frontendContext, backendContext)
+      projectRef = `frontend:${frontendRef} | backend:${backendRef}`
+    } else {
+      const zipFile = files.zipFile?.[0]
+      if (!githubUrl && !zipFile) {
+        throw new ApiError(400, 'Provide a GitHub repository URL or upload a ZIP of your project for Phase 2')
+      }
+      if (githubUrl && zipFile) {
+        throw new ApiError(400, 'Provide either a GitHub URL or a ZIP file, not both')
+      }
+
+      if (githubUrl) {
+        context = await analyzeGithubRepo(githubUrl)
+        projectRef = githubUrl
+
+        // Domain gate — do this BEFORE spending an AI call on question
+        // generation. A certificate can only be earned when the submitted
+        // repo actually matches the domain the candidate is being examined
+        // in, so a mismatch here should stop the attempt cold rather than
+        // generate questions for a repo that can never lead to a certificate.
+        const detected = classifyRepoDomain(context)
+        if (!domainsAreCompatible(attempt.domain, detected)) {
+          const chosenDifficulty = attempt.difficulty || attempt.level || 'medium'
+          throw new ApiError(
+            400,
+            `Domain mismatch: this repo looks like ${detected.domain}, but you're taking the ` +
+            `${attempt.domain} exam (${chosenDifficulty} difficulty). A certificate can only be earned ` +
+            `when the repo's domain matches your exam domain — paste a ${attempt.domain} repository to ` +
+            `continue, or exit and start a new ${detected.domain} exam instead.`
+          )
+        }
+      } else {
+        const tmpZipPath = path.join(os.tmpdir(), `phase2-${id}-${Date.now()}.zip`)
+        fs.writeFileSync(tmpZipPath, zipFile.buffer)
+        tmpFiles.push(tmpZipPath)
+        context = await analyzeZip(tmpZipPath)
+        projectRef = `zip:${zipFile.originalname}`
+      }
+    }
   } catch (err) {
-    throw new ApiError(400, `Could not analyze GitHub repository: ${err.message}`)
+    if (err instanceof ApiError) throw err
+    throw new ApiError(400, `Could not analyze your project: ${err.message}`)
+  } finally {
+    tmpFiles.forEach((p) => fs.unlink(p, () => {}))
   }
 
   context.title = `${attempt.domain} Project`
   context.domain = attempt.domain
 
-  const rawQuestions = await generatePhase2Questions(context)
+  // Honor the difficulty + question count the candidate picked when they
+  // started Phase 2 (defaults kept for older attempts created before this
+  // config existed).
+  const difficulty = attempt.level || 'medium'
+  const difficultyCfg = PHASE2_DIFFICULTY_CONFIG[difficulty] || PHASE2_DIFFICULTY_CONFIG.medium
+  const questionCount = Math.max(
+    PHASE2_MIN_QUESTIONS,
+    Math.min(PHASE2_MAX_QUESTIONS, attempt.questionCount || PHASE2_DEFAULT_QUESTIONS)
+  )
+
+  let rawQuestions
+  try {
+    rawQuestions = await generatePhase2Questions(context, questionCount, difficultyCfg.description, difficulty)
+  } catch (err) {
+    // Surface the real cause (bad/missing AI provider key, rate limit,
+    // malformed AI response, etc.) instead of letting this bubble up as an
+    // unhandled 500 with no message — that's what previously showed up on
+    // the frontend as the generic "Could not analyze your project" fallback.
+    console.error('[Phase2] AI question generation failed:', err.message)
+    throw new ApiError(502, `Question generation failed: ${err.message}. Your repo was analyzed fine — please try submitting again.`)
+  }
 
   if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
     throw new ApiError(500, 'Failed to generate questions from your project')
   }
 
-  // Ensure exactly 6 questions
-  const questions = rawQuestions.slice(0, 6)
+  const questions = rawQuestions.slice(0, questionCount)
 
   await prisma.examAttempt.update({
     where: { id },
     data: {
       questions,
       answers: {},
-      projectId: githubUrl
+      projectId: projectRef
     }
   })
 
@@ -359,6 +573,39 @@ const submitPhase2Project = asyncHandler(async (req, res) => {
     totalQuestions: questions.length
   }))
 })
+
+// Analyzes one side (frontend or backend) of a Full Stack Phase 2 submission —
+// either a GitHub URL or an uploaded ZIP — and returns [context, ref] where
+// ref is a human-readable label for what was submitted (stored on the attempt).
+async function analyzeProjectSide(label, githubUrl, zipFile, attemptId, tmpFiles) {
+  if (githubUrl) {
+    const context = await analyzeGithubRepo(githubUrl)
+    return [context, githubUrl]
+  }
+  const tmpZipPath = path.join(os.tmpdir(), `phase2-${attemptId}-${label}-${Date.now()}.zip`)
+  fs.writeFileSync(tmpZipPath, zipFile.buffer)
+  tmpFiles.push(tmpZipPath)
+  const context = await analyzeZip(tmpZipPath)
+  return [context, `zip:${zipFile.originalname}`]
+}
+
+// Combines a frontend + backend analysis into one project context shaped the
+// same way a single-project analysis is (techStack, fileTree, fileContents),
+// so generatePhase2Questions doesn't need to know about Full Stack at all.
+// Each side's file content is capped so the merged total stays within the
+// same budget a single-project submission would use.
+const MERGED_CONTENT_CHAR_BUDGET = 15000
+function mergeProjectContexts(frontendContext, backendContext) {
+  const perSideBudget = Math.floor(MERGED_CONTENT_CHAR_BUDGET / 2)
+  const frontendContent = (frontendContext.fileContents || '').slice(0, perSideBudget)
+  const backendContent = (backendContext.fileContents || '').slice(0, perSideBudget)
+
+  return {
+    techStack: [...new Set([...(frontendContext.techStack || []), ...(backendContext.techStack || [])])],
+    fileTree: { frontend: frontendContext.fileTree, backend: backendContext.fileTree },
+    fileContents: `--- FRONTEND ---\n${frontendContent}\n\n--- BACKEND ---\n${backendContent}`,
+  }
+}
 
 // GET /history
 const getExamHistory = asyncHandler(async (req, res) => {
@@ -396,7 +643,7 @@ const getExamHistory = asyncHandler(async (req, res) => {
 
 // GET /domains — get available domains with user's pass status
 const getDomains = asyncHandler(async (req, res) => {
-  const DOMAINS = ['Frontend', 'Backend', 'Full Stack', 'Mobile', 'Data Science', 'DevOps']
+  const DOMAINS = Object.keys(EXAM_CATEGORIES)
   const userId = req.user.id
 
   const attempts = await prisma.examAttempt.findMany({
@@ -415,16 +662,46 @@ const getDomains = asyncHandler(async (req, res) => {
 
     return {
       domain,
+      categories: EXAM_CATEGORIES[domain],
       phase1: { attempted: phase1Attempts.length > 0, passed: phase1Passed, bestScore: bestPhase1Score },
-      phase2: { attempted: phase2Attempts.length > 0, passed: phase2Passed, bestScore: bestPhase2Score, unlocked: phase1Passed }
+      phase2: { attempted: phase2Attempts.length > 0, passed: phase2Passed, bestScore: bestPhase2Score, unlocked: true },
+      // Combo certificate applies only when BOTH phases have been passed
+      // independently — this is distinct from just passing Phase 2 alone.
+      combo: { passed: phase1Passed && phase2Passed }
     }
   })
 
-  return res.json(new ApiResponse(200, { domains: domainStatus }))
+  // Difficulty presets so the frontend can render options + live time estimate
+  // without duplicating the formula.
+  const difficulties = Object.entries(DIFFICULTY_CONFIG).map(([value, cfg]) => ({
+    value,
+    label: cfg.label,
+    secPerQuestion: cfg.secPerQuestion
+  }))
+
+  const phase2Difficulties = Object.entries(PHASE2_DIFFICULTY_CONFIG).map(([value, cfg]) => ({
+    value,
+    label: cfg.label,
+    secPerQuestion: cfg.secPerQuestion,
+    description: cfg.description
+  }))
+
+  return res.json(new ApiResponse(200, {
+    domains: domainStatus,
+    difficulties,
+    questionCount: { min: MIN_QUESTIONS, max: MAX_QUESTIONS, default: DEFAULT_QUESTIONS },
+    baseBufferSec: BASE_BUFFER_SEC,
+    phase2: {
+      difficulties: phase2Difficulties,
+      questionCount: { min: PHASE2_MIN_QUESTIONS, max: PHASE2_MAX_QUESTIONS, default: PHASE2_DEFAULT_QUESTIONS },
+    },
+  }))
 })
 
 module.exports = {
   startExam, startDemoExam, getAttempt, submitAnswer, submitExam,
   reportTabSwitch, reportViolation, heartbeat,
-  submitPhase2Project, getExamHistory, getDomains
+  submitPhase2Project, getExamHistory, getDomains,
+  checkGithubDomain,
+  upload,
 }

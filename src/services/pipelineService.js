@@ -1,4 +1,31 @@
-
+/**
+ * pipelineService.js — Recruiter Hiring Pipeline v2
+ *
+ * PIPELINE STAGES:
+ *   applied → screened → [assignment_sent → assignment_submitted → project_evaluated] →
+ *   [exam_phase1_sent → exam_phase1_completed → [exam_phase2_sent → exam_phase2_completed]] →
+ *   ranked → selected | rejected
+ *
+ * NEW IN V2:
+ * 1. Assignment split: assignmentBrief (student-visible) + assignmentEvalCriteria (private AI scoring)
+ *    - Assignment deadline is an absolute date set by recruiter (must be > posting createdAt)
+ *    - AI evaluates project against criteria, not generic scoring
+ *
+ * 2. Two-phase exam in pipeline:
+ *    - Phase 1: MCQ in recruiter-chosen domain (from question bank)
+ *    - Phase 2 (if enabled + student submitted project): AI generates code + typing questions
+ *    - Phase 2 only triggers after project is submitted; if no project, phase 2 skipped
+ *
+ * 3. Manual mode: recruiter manually triggers each stage transition
+ *    - Auto stages disabled; recruiter sees "awaiting your action" UI
+ *    - Recruiter can reject at any stage with a reason
+ *    - Stage reminders sent to recruiter for pending actions
+ *
+ * 4. Notifications: student notified when they pass each stage
+ *    - Skill match notification on application creation
+ *
+ * 5. Hiring credits: 1 credit per posting activation (free first cycle)
+ */
 
 const prisma = require('../config/database')
 const { callAIForJSON } = require('../ai/aiProvider')
@@ -107,22 +134,45 @@ async function createApplication({ jobPostingId, userId, resumeUrl, coverNote })
   })
   if (existing) return existing
 
-  const application = await prisma.application.create({
-    data: {
-      jobPostingId, userId, resumeUrl,
-      coverNote: coverNote || null,
-      stage: 'applied',
-      status: 'in_progress'
+  let application
+  try {
+    application = await prisma.application.create({
+      data: {
+        jobPostingId, userId, resumeUrl,
+        coverNote: coverNote || null,
+        stage: 'applied',
+        status: 'in_progress'
+      }
+    })
+  } catch (err) {
+    // Unique constraint race: two near-simultaneous submissions (e.g. a
+    // slow first request retried by the client, or a double network send)
+    // both passed the pre-check above before either row existed. Whoever
+    // loses the race must NOT surface as an error — the application the
+    // person wanted now exists, so return it exactly as if this call had
+    // created it.
+    if (err?.code === 'P2002') {
+      const winner = await prisma.application.findUnique({
+        where: { jobPostingId_userId: { jobPostingId, userId } }
+      })
+      if (winner) return winner
     }
-  })
+    throw err
+  }
 
-  await recordStageEvent(application.id, 'applied')
-  await enqueueStatusEmail(application.id, 'application_received')
+  // From here on, the application row is committed. None of the following
+  // side effects are allowed to turn a successful submission into a client-
+  // visible failure — each is independently best-effort.
+  try { await recordStageEvent(application.id, 'applied') } catch {}
+  try { await enqueueStatusEmail(application.id, 'application_received') } catch {}
 
   // Skill match notification — check if candidate skills match job requirements
-  await checkAndNotifySkillMatch(application.id, userId, jobPosting)
+  try { await checkAndNotifySkillMatch(application.id, userId, jobPosting) } catch {}
 
-  await queues.applicationQueue.add({ applicationId: application.id, action: 'stage1_screen' }, defaultOpts)
+  try {
+    await queues.applicationQueue.add({ applicationId: application.id, action: 'stage1_screen' }, defaultOpts)
+  } catch {}
+
   return application
 }
 
@@ -137,8 +187,12 @@ async function checkAndNotifySkillMatch(applicationId, userId, jobPosting) {
     if (matchPct >= 70) {
       await notifyStudent(userId, {
         type: 'skill_match',
-        title: '🎯 Strong skill match!',
-        message: `Your skills match ${matchPct}% of requirements for "${jobPosting.title}". Great fit!`,
+        title: '🎯 Strong skill overlap!',
+        // Deliberately not "you're a great fit" — this % is required-skill
+        // overlap only. Final screening also weighs experience and an AI
+        // resume/JD match score, so a candidate can see 100% here and still
+        // be screened out. Overstating this caused real confusion.
+        message: `Your profile has ${matchPct}% of the required skills for "${jobPosting.title}". Screening also considers experience and resume fit, so this isn't a guaranteed pass — but it's a strong signal.`,
         data: { applicationId, jobPostingId: jobPosting.id, matchPct, matchedSkills: matched }
       })
     }
@@ -147,30 +201,7 @@ async function checkAndNotifySkillMatch(applicationId, userId, jobPosting) {
 
 // ─── Stage 1 — Rule-based screening ──────────────────────────────────────────
 
-// PUBLIC ENTRY POINT — wraps the real implementation so that ANY unhandled
-// exception (bad data, missing relation, prisma error, etc.) is caught,
-// logged loudly, and — critically — written back onto the application as
-// `pipelineError` instead of silently vanishing inside the queue's inline
-// fallback. Without this, a single throw here left the application frozen
-// at stage "applied" forever with zero visible signal in the UI or logs,
-// which looks exactly like "the pipeline doesn't work at all".
 async function runStage1Screening(applicationId) {
-  try {
-    await prisma.application.update({
-      where: { id: applicationId },
-      data: { pipelineError: null }
-    }).catch(() => {})
-    await runStage1ScreeningImpl(applicationId)
-  } catch (err) {
-    console.error(`[Pipeline] Stage1 screening FAILED for application ${applicationId}:`, err.message, err.stack)
-    await prisma.application.update({
-      where: { id: applicationId },
-      data: { pipelineError: `Stage1 screening error: ${err.message}` }
-    }).catch((e) => console.error('[Pipeline] Could not persist pipelineError:', e.message))
-  }
-}
-
-async function runStage1ScreeningImpl(applicationId) {
   const application = await loadApplicationFull(applicationId)
   if (!application) return
 
@@ -210,20 +241,7 @@ async function runStage1ScreeningImpl(applicationId) {
 
 // ─── Stage 2 — AI resume/JD match ────────────────────────────────────────────
 
-// Same error-surfacing wrapper as Stage 1 — see comment above.
 async function runStage2AIMatch(applicationId) {
-  try {
-    await runStage2AIMatchImpl(applicationId)
-  } catch (err) {
-    console.error(`[Pipeline] Stage2 AI match FAILED for application ${applicationId}:`, err.message, err.stack)
-    await prisma.application.update({
-      where: { id: applicationId },
-      data: { pipelineError: `Stage2 AI match error: ${err.message}` }
-    }).catch((e) => console.error('[Pipeline] Could not persist pipelineError:', e.message))
-  }
-}
-
-async function runStage2AIMatchImpl(applicationId) {
   const application = await loadApplicationFull(applicationId)
   if (!application) return
 
@@ -955,21 +973,17 @@ function buildRejectionReason(app, cutoffScore, weights) {
   return `Final score (${Math.round(app.finalScore)}) was below cutoff (${Math.round(cutoffScore)}). ${detail}.`
 }
 
+/**
+ * triggerRanking — computes score + rank for every candidate and stores a
+ * *recommended* selection cutoff on the posting. It does NOT change any
+ * application's status and does NOT send any selection/rejection emails.
+ *
+ * The recruiter reviews the ranked list in the UI, picks who to select
+ * (pre-checked with the recommended cutoff), and clicks "Send Decisions" —
+ * which calls finalizeSelection() below. That is the only place selection
+ * and rejection emails go out.
+ */
 async function triggerRanking(jobPostingId) {
-  try {
-    await triggerRankingImpl(jobPostingId)
-  } catch (err) {
-    console.error(`[Pipeline] Ranking FAILED for posting ${jobPostingId}:`, err.message, err.stack)
-    await notifyRecruiter((await prisma.jobPosting.findUnique({ where: { id: jobPostingId } }))?.recruiterId, {
-      type: 'ranking_failed',
-      title: '⚠️ Ranking failed',
-      message: `Ranking for this posting failed to complete: ${err.message}. Try again or contact support.`,
-      data: { jobPostingId }
-    }).catch(() => {})
-  }
-}
-
-async function triggerRankingImpl(jobPostingId) {
   const jobPosting = await prisma.jobPosting.findUnique({ where: { id: jobPostingId } })
   if (!jobPosting) return
 
@@ -992,47 +1006,103 @@ async function triggerRankingImpl(jobPostingId) {
   scored.sort((a, b) => b.finalScore - a.finalScore)
   scored.forEach((app, idx) => { app.rank = idx + 1 })
 
-  let selected, rejected
+  // Persist score + rank only — status stays 'in_progress' until the
+  // recruiter finalizes the decision.
+  for (const app of scored) {
+    await prisma.application.update({
+      where: { id: app.id },
+      data: { finalScore: app.finalScore, rank: app.rank }
+    })
+  }
+
+  // Work out a *recommended* selection cutoff, purely for pre-checking
+  // candidates in the recruiter UI — nothing is decided or emailed here.
+  let recommended
   if (jobPosting.cutoffMode === 'percentage' && jobPosting.cutoffPercentage) {
     const cutoffCount = Math.max(1, Math.ceil(scored.length * (jobPosting.cutoffPercentage / 100)))
-    selected = scored.slice(0, cutoffCount)
-    rejected = scored.slice(cutoffCount)
+    recommended = scored.slice(0, cutoffCount)
   } else {
     const openings = Math.max(1, jobPosting.openings)
-    selected = scored.slice(0, openings)
-    rejected = scored.slice(openings)
+    recommended = scored.slice(0, openings)
   }
-  const cutoffScore = selected.length > 0 ? selected[selected.length - 1].finalScore : 0
+  const cutoffScore = recommended.length > 0 ? recommended[recommended.length - 1].finalScore : 0
 
-  // AI selection narratives
-  let narrativeByUser = {}
-  if (selected.length > 0) {
-    try {
-      const narratives = await callAIForJSON({
-        systemPrompt: PROMPTS.SELECTION_NARRATIVE_SYSTEM,
-        userPrompt: PROMPTS.SELECTION_NARRATIVE_USER({
-          jobTitle: jobPosting.title,
-          candidates: selected.map(s => ({
-            userId: s.userId, ruleScore: s.ruleScore, aiMatchScore: s.aiMatchScore,
-            projectScore: s.projectScore, examScore: s.examScore,
-            finalScore: s.finalScore, rank: s.rank
-          }))
-        }),
-        maxTokens: 1200, temperature: 0.4
-      })
-      if (Array.isArray(narratives)) {
-        narrativeByUser = Object.fromEntries(narratives.map(n => [n.userId, n.narrative]))
+  await prisma.jobPosting.update({
+    where: { id: jobPostingId },
+    data: {
+      rankingSummary: {
+        rankedAt: new Date().toISOString(),
+        totalRanked: scored.length,
+        recommendedSelectedIds: recommended.map(a => a.id),
+        cutoffScore,
+        finalized: false
       }
-    } catch (err) {
-      console.error(`[Pipeline] Selection narrative failed:`, err.message)
     }
+  })
+
+  await notifyRecruiter(jobPosting.recruiterId, {
+    type: 'ranking_complete',
+    title: '🏆 Rankings ready',
+    message: `Rankings for "${jobPosting.title}" are ready to review — ${scored.length} candidates ranked. Select who to hire and send decisions.`,
+    data: { jobPostingId }
+  })
+}
+
+/**
+ * finalizeSelection — the ONLY place that sends selection/rejection emails.
+ *
+ * Recruiter reviews the ranked list, checks off who to select, and calls
+ * this once. Everyone checked gets a "selected" email; every other ranked
+ * (still in_progress) applicant for this posting gets a "rejected" email.
+ * The posting is then closed so it stops accepting new applications.
+ */
+async function finalizeSelection(jobPostingId, recruiterId, selectedApplicationIds = []) {
+  const jobPosting = await prisma.jobPosting.findFirst({ where: { id: jobPostingId, recruiterId } })
+  if (!jobPosting) throw new Error('Job posting not found')
+
+  const applications = await prisma.application.findMany({
+    where: { jobPostingId, stage: 'ranked', status: 'in_progress' },
+    include: { user: { select: { id: true, name: true, email: true } } }
+  })
+  if (applications.length === 0) throw new Error('No ranked candidates to decide on. Generate rankings first.')
+
+  const selectedIdSet = new Set(selectedApplicationIds)
+  const selected = applications.filter(a => selectedIdSet.has(a.id))
+  const rejected = applications.filter(a => !selectedIdSet.has(a.id))
+
+  if (selected.length === 0) throw new Error('Select at least one candidate before sending decisions.')
+
+  const weights = effectiveWeights(jobPosting)
+  const cutoffScore = selected.length > 0
+    ? Math.min(...selected.map(s => s.finalScore || 0))
+    : 0
+
+  // AI selection narratives for the chosen candidates only
+  let narrativeByUser = {}
+  try {
+    const narratives = await callAIForJSON({
+      systemPrompt: PROMPTS.SELECTION_NARRATIVE_SYSTEM,
+      userPrompt: PROMPTS.SELECTION_NARRATIVE_USER({
+        jobTitle: jobPosting.title,
+        candidates: selected.map(s => ({
+          userId: s.userId, ruleScore: s.ruleScore, aiMatchScore: s.aiMatchScore,
+          projectScore: s.projectScore, examScore: s.examScore,
+          finalScore: s.finalScore, rank: s.rank
+        }))
+      }),
+      maxTokens: 1200, temperature: 0.4
+    })
+    if (Array.isArray(narratives)) {
+      narrativeByUser = Object.fromEntries(narratives.map(n => [n.userId, n.narrative]))
+    }
+  } catch (err) {
+    console.error(`[Pipeline] Selection narrative failed:`, err.message)
   }
 
   for (const app of selected) {
     await prisma.application.update({
       where: { id: app.id },
       data: {
-        finalScore: app.finalScore, rank: app.rank,
         status: 'selected',
         selectionNarrative: narrativeByUser[app.userId] || null
       }
@@ -1044,7 +1114,7 @@ async function triggerRankingImpl(jobPostingId) {
       type: 'application_selected',
       title: '🎉 You\'ve been selected!',
       message: `Congratulations! You have been selected for "${jobPosting.title}". Rank #${app.rank}.`,
-      data: { applicationId: app.id, rank: app.rank, finalScore: app.finalScore }
+      data: { applicationId: app.id, rank: app.rank, finalScore: app.finalScore, jobPostingId }
     })
   }
 
@@ -1052,32 +1122,46 @@ async function triggerRankingImpl(jobPostingId) {
     const rejectionReason = buildRejectionReason(app, cutoffScore, weights)
     await prisma.application.update({
       where: { id: app.id },
-      data: { finalScore: app.finalScore, rank: app.rank, status: 'rejected', rejectionReason }
+      data: { status: 'rejected', rejectionReason }
     })
     await recordStageEvent(app.id, 'rejected')
     await enqueueStatusEmail(app.id, 'final_rejected')
+
+    await notifyStudent(app.userId, {
+      type: 'application_rejected',
+      title: 'Application update',
+      message: `Your application for "${jobPosting.title}" was not selected at this time.`,
+      data: { applicationId: app.id, jobPostingId, reason: rejectionReason }
+    })
   }
 
+  // Make the post "not functional" — close it so it stops accepting new
+  // applications now that a decision has been made.
   await prisma.jobPosting.update({
     where: { id: jobPostingId },
     data: {
+      status: 'closed',
       rankingSummary: {
-        rankedAt: new Date().toISOString(),
+        ...(jobPosting.rankingSummary || {}),
+        finalizedAt: new Date().toISOString(),
         selectedCount: selected.length,
         rejectedCount: rejected.length,
-        cutoffScore
+        cutoffScore,
+        finalized: true
       }
     }
   })
 
   await notifyRecruiter(jobPosting.recruiterId, {
-    type: 'ranking_complete',
-    title: '🏆 Rankings ready',
-    message: `Rankings for "${jobPosting.title}" complete — ${selected.length} selected, ${rejected.length} not selected.`,
+    type: 'decisions_sent',
+    title: '✅ Decisions sent',
+    message: `Decisions for "${jobPosting.title}" sent — ${selected.length} selected, ${rejected.length} rejected. Posting closed.`,
     data: { jobPostingId }
   })
 
   await queues.emailQueue.add({ type: 'recruiter_digest', jobPostingId }, defaultOpts)
+
+  return { selectedCount: selected.length, rejectedCount: rejected.length }
 }
 
 // ─── Hiring Credits ───────────────────────────────────────────────────────────
@@ -1146,6 +1230,7 @@ module.exports = {
   manualRejectCandidate,
   markReadyForRanking,
   triggerRanking,
+  finalizeSelection,
   effectiveWeights,
   checkHiringCredit,
   consumeHiringCredit,

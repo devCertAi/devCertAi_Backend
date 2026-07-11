@@ -10,8 +10,13 @@ function initSocket(io) {
     if (!token) return next(new Error('Authentication error'))
 
     try {
-      // Single secret — both user and recruiter tokens are now signed with ACCESS_TOKEN_SECRET
-      const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET)
+      // Single secret — both user and recruiter tokens are signed with JWT_SECRET
+      // (see utils/tokenUtils.js: signAccessToken / signRecruiterAccessToken).
+      // This MUST match, or every socket handshake fails auth silently and
+      // no client ever joins its room — real-time delivery breaks entirely
+      // even though the underlying REST action (e.g. sending a message)
+      // still succeeds via the database/email path.
+      const decoded = jwt.verify(token, process.env.JWT_SECRET)
 
       if (decoded.role === 'recruiter') {
         socket.recruiterId = decoded.recruiterId

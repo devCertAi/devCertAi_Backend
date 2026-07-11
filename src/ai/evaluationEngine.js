@@ -46,22 +46,38 @@ async function evaluateProject(project) {
   return buildReport(rawResult, project)
 }
 
-async function generatePhase2Questions(projectContext) {
+async function generatePhase2Questions(projectContext, questionCount = 6, difficultyDesc = '', difficulty = 'medium') {
   return await callAIForJSON({
-    systemPrompt: PROMPTS.PHASE2_QUESTION_GEN_SYSTEM,
+    systemPrompt: PROMPTS.PHASE2_QUESTION_GEN_SYSTEM(questionCount, difficultyDesc, difficulty),
     userPrompt: PROMPTS.PHASE2_QUESTION_GEN_USER(projectContext),
-    maxTokens: 1500,
+    maxTokens: 1800,
     temperature: 0.4
   })
 }
 
 async function evaluatePhase2Answers(context) {
   return await callAIForJSON({
-    systemPrompt: PROMPTS.PHASE2_ANSWER_EVAL_SYSTEM,
+    systemPrompt: PROMPTS.PHASE2_ANSWER_EVAL_SYSTEM(context.difficulty),
     userPrompt: PROMPTS.PHASE2_ANSWER_EVAL_USER(context),
     maxTokens: 1500,
     temperature: 0.2
   })
 }
 
-module.exports = { evaluateProject, generatePhase2Questions, evaluatePhase2Answers }
+// One batched AI call per graded Phase 1 attempt — takes only the questions
+// the candidate got WRONG and returns a short explanation for each (why the
+// correct option is right / why their pick was a common mistake). Kept
+// separate from grading itself (which uses the QuestionBank answer key, no
+// AI needed) so a slow/failed AI call never blocks the actual score.
+async function generatePhase1Explanations(wrongItems) {
+  if (!Array.isArray(wrongItems) || wrongItems.length === 0) return []
+  const result = await callAIForJSON({
+    systemPrompt: PROMPTS.PHASE1_EXPLAIN_SYSTEM,
+    userPrompt: PROMPTS.PHASE1_EXPLAIN_USER(wrongItems),
+    maxTokens: 1200,
+    temperature: 0.2
+  })
+  return Array.isArray(result?.explanations) ? result.explanations : []
+}
+
+module.exports = { evaluateProject, generatePhase2Questions, evaluatePhase2Answers, generatePhase1Explanations }

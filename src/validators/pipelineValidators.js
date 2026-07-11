@@ -145,6 +145,10 @@ const sendReminderSchema = z.object({
   note: z.string().max(500).optional()
 })
 
+const finalizeSelectionSchema = z.object({
+  selectedApplicationIds: z.array(z.string()).min(1, 'Select at least one candidate before sending decisions.')
+})
+
 module.exports = {
   createJobPostingSchema,
   updateJobPostingSchema,
@@ -154,5 +158,6 @@ module.exports = {
   manualAdvanceSchema,
   manualRejectSchema,
   sendReminderSchema,
+  finalizeSelectionSchema,
   EXAM_DOMAINS
 }

@@ -6,7 +6,8 @@ const prisma = require('../config/database')
 async function extractTextFromUrl(resumeUrl) {
   if (!resumeUrl) return ''
   try {
-    const response = await axios.get(resumeUrl, { responseType: 'arraybuffer', timeout: 15000 })
+    const { signRawUrl } = require('./storageService')
+    const response = await axios.get(signRawUrl(resumeUrl), { responseType: 'arraybuffer', timeout: 15000 })
     const buffer = Buffer.from(response.data)
     const pdfParse = require('pdf-parse')
     const result = await pdfParse(buffer)

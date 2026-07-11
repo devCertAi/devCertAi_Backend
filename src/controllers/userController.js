@@ -3,12 +3,13 @@ const prisma = require('../config/database')
 const { ApiError } = require('../utils/ApiError')
 const { ApiResponse } = require('../utils/ApiResponse')
 const asyncHandler = require('../utils/asyncHandler')
-const { uploadAvatar, uploadCV } = require('../services/storageService')
+const { uploadAvatar, uploadCV, signRawUrl, signRawUrlCandidates } = require('../services/storageService')
 const queues = require('../queues')
 const { defaultOpts } = queues
 const { parseResumeFromBuffer, extractExperienceYears } = require('../services/resumeParser')
 const { computeCompleteness } = require('../utils/profileCompleteness')
 const multer = require('multer')
+const axios = require('axios')
 const { CLEAR_COOKIE_OPTS } = require('../utils/tokenUtils')
 
 // Separate multer instances — avatar stays at 5 MB, CV bumped to 10 MB
@@ -71,6 +72,10 @@ const getPublicProfile = asyncHandler(async (req, res) => {
       verificationId: true, createdAt: true, isPublic: true
     }
   })
+
+  if (user.profileDetail?.cvUrl) {
+    user.profileDetail = { ...user.profileDetail, cvUrl: signRawUrl(user.profileDetail.cvUrl) }
+  }
 
   return res.json(new ApiResponse(200, { user, certificates, isOwner }))
 })
@@ -210,7 +215,9 @@ const getProfileDetail = asyncHandler(async (req, res) => {
       certifications: { orderBy: { issueDate: 'desc' } }
     }
   })
-  return res.json(new ApiResponse(200, { detail: detail || null }))
+  return res.json(new ApiResponse(200, {
+    detail: detail ? { ...detail, cvUrl: signRawUrl(detail.cvUrl) } : null
+  }))
 })
 
 // ─── updateProfileDetail ──────────────────────────────────────────────────────
@@ -381,7 +388,101 @@ const uploadAndParseCV = asyncHandler(async (req, res) => {
     update: {         cvUrl, cvParsedAt: new Date() }
   })
 
-  return res.json(new ApiResponse(200, { cvUrl, parsed }, 'CV uploaded and parsed'))
+  return res.json(new ApiResponse(200, { cvUrl: signRawUrl(cvUrl), parsed }, 'CV uploaded and parsed'))
+})
+
+// ─── viewCV (proxy) ───────────────────────────────────────────────────────────
+// Streams the CV PDF through OUR OWN domain instead of sending the browser
+// straight to a res.cloudinary.com URL. Two problems this fixes at once:
+//   1. The address bar / new tab stays on our own domain (no "redirect to
+//      another website").
+//   2. We control the response headers, so the browser's built-in PDF viewer
+//      always gets a real `application/pdf` body with an `inline` disposition
+//      — instead of whatever Cloudinary's raw/upload delivery happens to send
+//      (which is what was producing "Failed to load PDF document" once the
+//      restricted-media-types signature was stale or mismatched).
+// We always re-sign the stored URL fresh, right before fetching it, so this
+// never depends on a previously-generated link having not expired yet.
+async function streamCV(cvUrl, res) {
+  if (!cvUrl) throw new ApiError(404, 'No CV uploaded')
+
+  // Fail fast with a clear message instead of a mysterious 502 further down
+  // if the Cloudinary credentials aren't even configured in this environment.
+  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+    console.error('[CV proxy] Cloudinary credentials are not configured (CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET)')
+    throw new ApiError(500, 'CV storage is not configured on this server')
+  }
+
+  // Try the plain stored URL first (covers accounts where "Restricted media
+  // types" for raw/PDF delivery isn't actually enabled — in which case
+  // signing is unnecessary and, if done wrong, can itself cause a 401).
+  // Fall back to the signed candidates only if the plain URL is rejected.
+  const attempts = [cvUrl, ...signRawUrlCandidates(cvUrl).filter(u => u !== cvUrl)]
+
+  let upstream = null
+  let lastErr = null
+  for (const candidateUrl of attempts) {
+    try {
+      upstream = await axios.get(candidateUrl, { responseType: 'arraybuffer', timeout: 15000 })
+      console.log('[CV proxy] succeeded with:', candidateUrl === cvUrl ? 'plain stored URL' : 'signed URL', candidateUrl)
+      break
+    } catch (err) {
+      lastErr = err
+      const status = err.response?.status
+      const cldReason = err.response?.headers?.['x-cld-error']
+      console.error('[CV proxy] candidate failed:', { url: candidateUrl, status, cldReason, message: err.message })
+    }
+  }
+
+  if (!upstream) {
+    const status = lastErr?.response?.status
+    const cldReason = lastErr?.response?.headers?.['x-cld-error']
+    console.error('[CV proxy] all candidates failed:', { status, cldReason, message: lastErr?.message })
+
+    if (status === 401) {
+      throw new ApiError(502, 'CV storage rejected the request (signature mismatch) — check Cloudinary credentials')
+    }
+    if (status === 404) {
+      throw new ApiError(404, 'CV file could not be found in storage')
+    }
+    throw new ApiError(502, 'Could not retrieve the CV from storage right now')
+  }
+
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', 'inline; filename="cv.pdf"')
+  res.setHeader('Cache-Control', 'private, max-age=0, no-cache')
+  return res.send(Buffer.from(upstream.data))
+}
+
+// Own CV — GET /users/me/cv
+const viewOwnCV = asyncHandler(async (req, res) => {
+  const detail = await prisma.profileDetail.findUnique({
+    where: { userId: req.user.id },
+    select: { cvUrl: true }
+  })
+  await streamCV(detail?.cvUrl, res)
+})
+
+// Any visible profile's CV — GET /users/:username/cv
+const viewUserCV = asyncHandler(async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { username: req.params.username },
+    select: { profileDetail: { select: { cvUrl: true } } }
+  })
+  if (!user) throw new ApiError(404, 'User not found')
+  await streamCV(user.profileDetail?.cvUrl, res)
+})
+
+// ─── deleteCV ─────────────────────────────────────────────────────────────────
+// (The Profile page's "remove CV" button already called DELETE /users/cv, but
+// no matching route/controller existed yet — added here alongside the CV
+// proxy work since it's the same feature.)
+const deleteCV = asyncHandler(async (req, res) => {
+  await prisma.profileDetail.updateMany({
+    where: { userId: req.user.id },
+    data: { cvUrl: null, cvParsedAt: null }
+  })
+  return res.json(new ApiResponse(200, {}, 'CV removed'))
 })
 
 // ─── getProfileCompleteness ───────────────────────────────────────────────────
@@ -416,6 +517,9 @@ module.exports = {
   getDashboard, updateSkills, deleteAccount,
   getProfileDetail, updateProfileDetail,
   uploadAndParseCV,
+  viewOwnCV,
+  viewUserCV,
+  deleteCV,
   getProfileCompleteness,
   upload,
   uploadCVMulter

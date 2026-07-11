@@ -202,15 +202,32 @@ const getRankedList = asyncHandler(async (req, res) => {
 
   const applications = await prisma.application.findMany({
     where: { jobPostingId: req.params.id, stage: 'ranked' },
-    orderBy: [{ status: 'asc' }, { rank: 'asc' }],
+    orderBy: [{ rank: 'asc' }],
     include: {
-      user: { select: { id: true, name: true, username: true, email: true, avatar: true } }
+      user: {
+        select: {
+          id: true, name: true, username: true, email: true, avatar: true,
+          skills: { include: { skill: true } }
+        }
+      }
     }
   })
 
+  const rankingSummary = posting.rankingSummary || {}
+  const finalized = !!rankingSummary.finalized
+  const recommendedSelectedIds = rankingSummary.recommendedSelectedIds || []
+
   return res.json(new ApiResponse(200, {
-    posting: { id: posting.id, title: posting.title, rankingSummary: posting.rankingSummary },
-    applications
+    postingId: posting.id,
+    postingTitle: posting.title,
+    rankedAt: rankingSummary.rankedAt || null,
+    finalized,
+    recommendedSelectedIds,
+    applications,
+    selected: applications.filter(a => a.status === 'selected'),
+    ranked: applications.filter(a => a.status === 'in_progress'),
+    rejected: applications.filter(a => a.status === 'rejected'),
+    total: applications.length
   }))
 })
 

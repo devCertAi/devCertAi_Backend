@@ -7,6 +7,7 @@
  */
 
 const prisma = require('../config/database')
+const { signRawUrl } = require('../services/storageService')
 const { ApiError } = require('../utils/ApiError')
 const { ApiResponse } = require('../utils/ApiResponse')
 const asyncHandler = require('../utils/asyncHandler')
@@ -93,7 +94,7 @@ const getApplyPreflight = asyncHandler(async (req, res) => {
     headline:   detail?.headline || null,
     location:   detail?.location || null,
     summary:    detail?.summary || null,
-    cvUrl:      detail?.cvUrl || null,
+    cvUrl:      signRawUrl(detail?.cvUrl || null),
     cvParsedAt: detail?.cvParsedAt || null,
     githubUrl:  detail?.githubUrl || null,
     linkedinUrl: detail?.linkedinUrl || null,

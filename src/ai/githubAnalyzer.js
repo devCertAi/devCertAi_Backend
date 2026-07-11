@@ -131,6 +131,54 @@ async function analyzeGithubRepo(githubUrl) {
   }
 }
 
+// ── Domain classification ────────────────────────────────────────────────
+// Guesses which exam domain (Frontend / Backend / Full Stack / Mobile /
+// Data Science / DevOps / Programming Languages) a repo belongs to, purely
+// from the detected tech stack + file tree. This runs BEFORE we spend an AI
+// call generating Phase 2 questions, so a candidate who pastes the wrong
+// repo (e.g. a Backend repo for a Frontend exam) gets an instant, cheap
+// rejection instead of burning AI credits/time on a repo we're going to
+// throw away anyway.
+const FRONTEND_SIGNALS = ['React', 'Vue.js', 'Angular', 'Next.js']
+const BACKEND_SIGNALS = ['Express.js', 'Django', 'FastAPI', 'Java/Spring', 'Go', 'Prisma']
+const MOBILE_PATH_HINTS = ['androidmanifest.xml', '.xcodeproj', 'pubspec.yaml', 'app/src/main']
+const DEVOPS_PATH_HINTS = ['dockerfile', 'docker-compose', '.github/workflows', 'kubernetes', 'helm/']
+const DATASCIENCE_PATH_HINTS = ['.ipynb', 'requirements.txt', 'model.py', 'train.py', 'dataset']
+
+function classifyRepoDomain({ techStack = [], fileTree = [] } = {}) {
+  const paths = fileTree.map(p => String(p).toLowerCase())
+  const hasAny = (hints) => hints.some(h => paths.some(p => p.includes(h)))
+
+  const hasFrontend = techStack.some(t => FRONTEND_SIGNALS.includes(t)) || hasAny(['.jsx', '.tsx', '.vue'])
+  const hasBackend = techStack.some(t => BACKEND_SIGNALS.includes(t))
+  const hasMobile = hasAny(MOBILE_PATH_HINTS)
+  const hasDevOps = hasAny(DEVOPS_PATH_HINTS)
+  const hasDataScience = hasAny(DATASCIENCE_PATH_HINTS) && techStack.includes('Python')
+
+  if (hasMobile) return { domain: 'Mobile', confidence: 'high' }
+  if (hasFrontend && hasBackend) return { domain: 'Full Stack', confidence: 'high' }
+  if (hasFrontend) return { domain: 'Frontend', confidence: 'high' }
+  if (hasBackend) return { domain: 'Backend', confidence: 'high' }
+  if (hasDataScience) return { domain: 'Data Science', confidence: 'medium' }
+  if (hasDevOps) return { domain: 'DevOps', confidence: 'medium' }
+  if (techStack.length > 0) return { domain: 'Programming Languages', confidence: 'low' }
+  return { domain: null, confidence: 'none' }
+}
+
+// Is the detected repo domain compatible with the exam domain the candidate
+// selected? 'Full Stack' exams accept either a Full Stack repo, or a repo
+// that's purely Frontend or purely Backend (since Full Stack candidates
+// submit frontend + backend as two SEPARATE links anyway — see
+// examController's isFullStack branch, which never calls this on the
+// combined repo). Low-confidence / undetectable repos are allowed through
+// rather than blocked, to avoid false-positive rejections on unusual stacks.
+function domainsAreCompatible(examDomain, detected) {
+  if (!detected.domain || detected.confidence === 'low' || detected.confidence === 'none') return true
+  if (detected.domain === examDomain) return true
+  if (examDomain === 'Full Stack' && (detected.domain === 'Frontend' || detected.domain === 'Backend')) return true
+  return false
+}
+
 async function validateGithubRepo(githubUrl) {
   try {
     const { owner, repo } = parseGithubUrl(githubUrl)
@@ -152,4 +200,7 @@ async function validateGithubRepo(githubUrl) {
   }
 }
 
-module.exports = { analyzeGithubRepo, validateGithubRepo, parseGithubUrl }
+module.exports = {
+  analyzeGithubRepo, validateGithubRepo, parseGithubUrl,
+  classifyRepoDomain, domainsAreCompatible,
+}

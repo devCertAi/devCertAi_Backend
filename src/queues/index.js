@@ -24,7 +24,7 @@
  *    call) and automatically re-probes it afterwards.
  */
 
-const { isRedisUp, getRedis, createManagedClient } = require('../config/redis')
+const { isRedisUp, getRedis } = require('../config/redis')
 
 let Bull
 try {
@@ -36,21 +36,29 @@ try {
 const ADD_TIMEOUT_MS = 2500
 const PROBE_COOLDOWN_MS = 30_000
 
-// ── Redis connection factory for Bull ───────────────────────────────────────
-// Bull needs up to 3 separate ioredis connections per queue (client,
-// subscriber, bclient). Handing Bull a plain `{ redis: {...} }` config lets
-// Bull construct those connections ITSELF, with no 'error' listener attached
-// until after Bull's own setup runs — so a connection failure in that window
-// (e.g. local Redis not running, or the socket closing mid-command) throws
-// as a process-level uncaught exception instead of a handled 'error' event.
-// That is what was crashing the server.
-//
-// `createClient` lets us build every one of those connections ourselves,
-// using the exact same createManagedClient() used everywhere else — which
-// attaches its listeners BEFORE connecting, so failures are always handled,
-// never thrown.
-function createClient(type) {
-  return createManagedClient(`bull:${type}`)
+// ── Redis connection config for Bull ────────────────────────────────────────
+function getRedisConfig() {
+  const REDIS_URL = process.env.REDIS_URL
+  if (!REDIS_URL || REDIS_URL.includes('localhost') || REDIS_URL.includes('127.0.0.1')) {
+    return { redis: { host: '127.0.0.1', port: 6379, lazyConnect: true } }
+  }
+  const url = new URL(REDIS_URL)
+  return {
+    redis: {
+      host: url.hostname,
+      port: parseInt(url.port) || 6379,
+      password: url.password || undefined,
+      username: url.username || 'default',
+      tls: url.protocol === 'rediss:' ? { rejectUnauthorized: false } : undefined,
+      lazyConnect: true,
+      maxRetriesPerRequest: 1,
+      // Stop hammering Upstash on quota — null = give up immediately
+      retryStrategy: (times) => {
+        if (times > 3) return null
+        return Math.min(times * 500, 5_000)
+      },
+    },
+  }
 }
 
 // ── Resilient queue wrapper ──────────────────────────────────────────────────
@@ -68,7 +76,7 @@ function createResilientQueue(name) {
 
   if (Bull) {
     try {
-      bull = new Bull(name, { createClient })
+      bull = new Bull(name, getRedisConfig())
 
       bull.on('error', (err) => {
         const isQuota = err?.message?.includes('max requests limit exceeded')

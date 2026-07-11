@@ -1,18 +1,11 @@
 /**
  * config/redis.js — Resilient Redis wrapper
  *
- * Handles ANY Redis failure (quota exceeded, connection refused, connection
- * dropped, local Redis not running, etc.) without ever crashing the process:
- *  - retryStrategy backs off and retries transient failures, but gives up
- *    permanently (and fast) once we've confirmed it's a quota error
- *  - 'error' event is attached synchronously before .connect() is called,
- *    on every client we create — including the ones handed to Bull
- *  - process-level uncaughtException / unhandledRejection guards catch the
- *    rare case where ioredis throws before an instance's own listener can
- *    intercept it (this is NOT quota-specific — any ioredis internal error,
- *    e.g. "Connection is closed.", can surface this way when a socket is
- *    torn down mid-command). We NEVER process.exit() for a Redis-originated
- *    error — Redis is optional everywhere in this app by design.
+ * Handles Upstash quota errors (and any Redis failure) without crashing:
+ *  - retryStrategy returns null immediately on quota errors → no reconnect loop
+ *  - 'error' event is attached synchronously before .connect() is called
+ *  - process-level uncaughtException guard catches the rare auth-phase crash
+ *    that ioredis emits before event listeners can intercept it
  *  - safeRedis proxy: every Redis command returns null instead of throwing
  *    when Redis is unavailable — callers fall through to DB automatically
  */
@@ -21,157 +14,116 @@ const Redis = require('ioredis')
 
 let redis = null
 let redisAvailable = false
-let quotaExceeded = false // distinct from redisAvailable — only true once we've SEEN a quota error
-
-// ── Helper: is this an ioredis-originated error? ─────────────────────────────
-// Broad by design. We'd rather swallow a rare non-Redis error that happens to
-// look like this than crash the whole server for something that was always
-// meant to be optional. Anything ioredis-shaped gets treated as "mark Redis
-// down, keep the app running" instead of a fatal exception.
-function looksLikeRedisError(err) {
-  if (!err) return false
-  const msg = err.message || ''
-  const stackHasIoredis = typeof err.stack === 'string' && err.stack.includes('ioredis')
-  return (
-    stackHasIoredis ||
-    err.name === 'ReplyError' ||
-    err.name === 'MaxRetriesPerRequestError' ||
-    msg.includes('max requests limit exceeded') ||
-    msg.includes('Connection is closed') ||
-    msg.includes('ECONNREFUSED') ||
-    msg.includes('ETIMEDOUT') ||
-    msg.includes('ECONNRESET') ||
-    msg.includes('Redis connection')
-  )
-}
-
-function markQuotaExceeded(reason) {
-  quotaExceeded = true
-  redisAvailable = false
-  console.warn(`⚠️  Redis quota exceeded (${reason}) — server continues without Redis cache`)
-}
-
-function markDown(reason) {
-  if (redisAvailable) console.warn(`⚠️  Redis unavailable (${reason}) — falling back to DB`)
-  redisAvailable = false
-}
 
 // ── Process-level safety net ─────────────────────────────────────────────────
-// ioredis can throw an uncaught error before an instance's own 'error'
-// listener can intercept it — during the AUTH handshake (quota rejection),
-// or when a socket closes with a command still in flight ("Connection is
-// closed."), which is the ordinary, expected thing that happens when a local
-// Redis server isn't running or gets restarted. Neither case should ever
-// take the whole app down.
+// ioredis can throw an uncaught ReplyError during the AUTH handshake
+// (before the instance's 'error' event listener fires) when Upstash
+// rejects the connection due to quota. We catch it here so the server
+// never crashes — just marks Redis as unavailable.
+const _originalUncaught = process.listeners('uncaughtException').slice()
+
 process.on('uncaughtException', (err) => {
-  if (looksLikeRedisError(err)) {
-    if (err.message?.includes('max requests limit exceeded')) markQuotaExceeded('uncaughtException')
-    else markDown(err.message)
-    return // swallow — do not re-throw, do not exit
+  const isRedisQuota =
+    err?.message?.includes('max requests limit exceeded') ||
+    (err?.name === 'ReplyError' && err?.command?.name === 'auth')
+
+  if (isRedisQuota) {
+    redisAvailable = false
+    console.warn('⚠️  Redis quota exceeded (auth phase) — server continues without Redis cache')
+    return // swallow — do not re-throw
   }
 
-  // Not a Redis error — genuinely fatal, preserve original crash behaviour
+  // Not a Redis error — re-emit so other handlers / default behaviour runs
   console.error('[uncaughtException]', err)
   process.exit(1)
 })
 
-// Same category of error can also arrive as an unhandled promise rejection
-// depending on ioredis version / code path — cover both.
-process.on('unhandledRejection', (err) => {
-  if (looksLikeRedisError(err)) {
-    markDown(err?.message)
-    return
-  }
-  console.error('[unhandledRejection]', err)
-})
+// ── Build ioredis client ─────────────────────────────────────────────────────
+function buildClient() {
+  const url = process.env.REDIS_URL
 
-// ── Shared connection options ─────────────────────────────────────────────────
-function sharedOpts() {
-  return {
+  const sharedOpts = {
     maxRetriesPerRequest: 1,
     enableReadyCheck: false,   // skip the PING after auth — saves one request
     lazyConnect: true,
     retryStrategy(times) {
-      // Once we've confirmed quota is the problem, stop immediately —
-      // retrying just burns more quota for no benefit.
-      if (quotaExceeded) return null
-      // Otherwise this is an ordinary transient failure (local Redis not
-      // started yet, brief network blip, dev server restart) — back off
-      // and keep trying instead of giving up on the very first attempt.
-      if (times > 10) return null
-      return Math.min(times * 500, 10_000)
+      // Never retry if quota is exceeded — it will keep failing and burning requests
+      if (!redisAvailable && times > 0) return null
+      // Otherwise back off up to 10 s, max 5 attempts
+      if (times > 5) return null
+      return Math.min(times * 1000, 10_000)
     },
     reconnectOnError(err) {
-      // Reconnect for READONLY (Upstash failover) or ordinary connection
-      // resets; never for confirmed quota errors.
-      if (quotaExceeded) return false
+      // Only reconnect for READONLY (Upstash failover), never for quota errors
       if (err?.message?.includes('READONLY')) return true
-      if (err?.message?.includes('ECONNRESET')) return true
       return false
     },
   }
-}
 
-function connectionConfig() {
-  const url = process.env.REDIS_URL
   if (!url || url.includes('localhost') || url.includes('127.0.0.1')) {
-    return { host: '127.0.0.1', port: 6379, ...sharedOpts() }
+    return new Redis({ host: '127.0.0.1', port: 6379, ...sharedOpts })
   }
+
   const parsed = new URL(url)
-  return {
+  return new Redis({
     host: parsed.hostname,
     port: parseInt(parsed.port) || 6379,
     password: parsed.password || undefined,
     username: parsed.username || 'default',
     tls: parsed.protocol === 'rediss:' ? { rejectUnauthorized: false } : undefined,
-    ...sharedOpts(),
-  }
+    ...sharedOpts,
+  })
 }
 
 // ── Attach lifecycle listeners ───────────────────────────────────────────────
-// Exported (see createManagedClient below) so ANY ioredis client this app
-// creates — including the ones handed to Bull for its queues — gets the
-// exact same "never let this crash the process" treatment. This is the
-// piece that was missing for Bull's own connections.
-function attachListeners(client, label = 'redis') {
-  // 'error' must be attached before .connect() so it catches auth/quota errors
+function attachListeners(client) {
+  // 'error' must be attached before .connect() so it catches auth errors
   client.on('error', (err) => {
     const isQuota = err?.message?.includes('max requests limit exceeded')
-    if (isQuota) {
-      markQuotaExceeded(label)
+    const isAuthQuota = err?.command?.name === 'auth' && isQuota
+
+    if (isQuota || isAuthQuota) {
+      if (redisAvailable) console.warn('⚠️  Redis quota exceeded — falling back to DB for all cache ops')
+      redisAvailable = false
+
+      // Stop ioredis from hammering Upstash with reconnect attempts
       try { client.disconnect() } catch {}
       return
     }
-    markDown(`${label}: ${err.message}`)
+
+    if (redisAvailable) console.warn('⚠️  Redis unavailable — falling back to DB:', err.message)
+    redisAvailable = false
   })
 
   client.on('connect', () => {
     redisAvailable = true
-    console.log(`✅ Redis connected (${label})`)
+    console.log('✅ Redis connected')
   })
 
   client.on('ready', () => {
     redisAvailable = true
-    console.log(`✅ Redis ready (${label})`)
+    console.log('✅ Redis ready')
   })
 
-  client.on('close', () => markDown(`${label} closed`))
-  client.on('end', () => { redisAvailable = false })
-  client.on('reconnecting', () => console.log(`🔄 Redis reconnecting… (${label})`))
+  client.on('close', () => {
+    if (redisAvailable) console.warn('⚠️  Redis connection closed — falling back to DB')
+    redisAvailable = false
+  })
+
+  client.on('end', () => {
+    redisAvailable = false
+  })
+
+  client.on('reconnecting', () => {
+    console.log('🔄 Redis reconnecting…')
+  })
 }
 
-// ── createManagedClient: for anything (including Bull) that needs its own
-// raw ioredis instance but should still get crash-proof handling ───────────
-function createManagedClient(label = 'redis') {
-  const client = new Redis(connectionConfig())
-  attachListeners(client, label) // attach BEFORE any connect happens
-  return client
-}
-
-// ── getRedis: the app's single shared client (caching, safeRedis) ───────────
+// ── getRedis: raw ioredis client (needed by Bull internally) ─────────────────
 function getRedis() {
   if (!redis) {
-    redis = createManagedClient('shared')
+    redis = buildClient()
+    attachListeners(redis)         // attach BEFORE connect
     redis.connect().catch(() => {}) // errors handled by 'error' event above
   }
   return redis
@@ -221,4 +173,4 @@ const safeRedis = new Proxy({}, {
   },
 })
 
-module.exports = { getRedis, safeRedis, isRedisUp, createManagedClient, connectionConfig }
+module.exports = { getRedis, safeRedis, isRedisUp }

@@ -5,6 +5,7 @@ const asyncHandler = require('../utils/asyncHandler')
 const queues = require('../queues')
 const { defaultOpts } = queues
 const pipelineService = require('../services/pipelineService')
+const { signRawUrl } = require('../services/storageService')
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -96,11 +97,18 @@ const createPosting = asyncHandler(async (req, res) => {
         cutoffPercentage: data.cutoffPercentage,
         ruleScoreThreshold: data.ruleScoreThreshold,
         aiMatchThreshold: data.aiMatchThreshold,
+        assignmentEnabled: data.assignmentEnabled,
         assignmentBrief: data.assignmentBrief,
+        assignmentEvalCriteria: data.assignmentEvalCriteria,
+        assignmentDeadlineDate: data.assignmentDeadlineDate,
         assignmentDeadlineDays: data.assignmentDeadlineDays,
         examEnabled: data.examEnabled,
+        examPhase1: data.examPhase1,
+        examPhase2: data.examPhase2,
+        examDomain: data.examDomain,
         examDurationMin: data.examDurationMin,
         examWindowHours: data.examWindowHours,
+        manualMode: data.manualMode,
         matchNotificationCap: data.matchNotificationCap,
         scoringWeights: data.scoringWeights || undefined,
         status: data.status,
@@ -208,11 +216,18 @@ const updatePosting = asyncHandler(async (req, res) => {
       cutoffPercentage: data.cutoffPercentage ?? posting.cutoffPercentage,
       ruleScoreThreshold: data.ruleScoreThreshold ?? posting.ruleScoreThreshold,
       aiMatchThreshold: data.aiMatchThreshold ?? posting.aiMatchThreshold,
+      assignmentEnabled: data.assignmentEnabled ?? posting.assignmentEnabled,
       assignmentBrief: data.assignmentBrief ?? posting.assignmentBrief,
+      assignmentEvalCriteria: data.assignmentEvalCriteria ?? posting.assignmentEvalCriteria,
+      assignmentDeadlineDate: data.assignmentDeadlineDate ?? posting.assignmentDeadlineDate,
       assignmentDeadlineDays: data.assignmentDeadlineDays ?? posting.assignmentDeadlineDays,
       examEnabled: data.examEnabled ?? posting.examEnabled,
+      examPhase1: data.examPhase1 ?? posting.examPhase1,
+      examPhase2: data.examPhase2 ?? posting.examPhase2,
+      examDomain: data.examDomain ?? posting.examDomain,
       examDurationMin: data.examDurationMin ?? posting.examDurationMin,
       examWindowHours: data.examWindowHours ?? posting.examWindowHours,
+      manualMode: data.manualMode ?? posting.manualMode,
       matchNotificationCap: data.matchNotificationCap ?? posting.matchNotificationCap,
       scoringWeights: data.scoringWeights ?? posting.scoringWeights,
       status: data.status ?? posting.status
@@ -278,11 +293,19 @@ const clonePosting = asyncHandler(async (req, res) => {
         openings: posting.openings,
         ruleScoreThreshold: posting.ruleScoreThreshold,
         aiMatchThreshold: posting.aiMatchThreshold,
+        assignmentEnabled: posting.assignmentEnabled,
         assignmentBrief: posting.assignmentBrief,
+        assignmentEvalCriteria: posting.assignmentEvalCriteria,
         assignmentDeadlineDays: posting.assignmentDeadlineDays,
+        // assignmentDeadlineDate intentionally NOT copied — it's an absolute
+        // date tied to the original posting and would already be in the past
         examEnabled: posting.examEnabled,
+        examPhase1: posting.examPhase1,
+        examPhase2: posting.examPhase2,
+        examDomain: posting.examDomain,
         examDurationMin: posting.examDurationMin,
         examWindowHours: posting.examWindowHours,
+        manualMode: posting.manualMode,
         matchNotificationCap: posting.matchNotificationCap,
         scoringWeights: posting.scoringWeights || undefined,
         status: 'draft',
@@ -362,7 +385,6 @@ const APPLICATION_LIST_SELECT = {
   id: true, stage: true, status: true, ruleScore: true, aiMatchScore: true,
   projectScore: true, examScore: true, finalScore: true, rank: true,
   missingSkills: true, createdAt: true, updatedAt: true,
-  pipelineError: true, // surfaces a stuck/failed stage instead of silently showing nothing
   user: { select: { id: true, name: true, username: true, email: true, avatar: true } }
 }
 
@@ -422,7 +444,16 @@ const getApplicationDetail = asyncHandler(async (req, res) => {
     })
   }
 
-  return res.json(new ApiResponse(200, { application, project, examAttempt }))
+  // Full stage history — shows the recruiter exactly which pipeline stages
+  // have successfully executed for this application, in order.
+  const stageEvents = await prisma.applicationStageEvent.findMany({
+    where: { applicationId: application.id },
+    orderBy: { enteredAt: 'asc' }
+  })
+
+  if (application.resumeUrl) application.resumeUrl = signRawUrl(application.resumeUrl)
+
+  return res.json(new ApiResponse(200, { application, project, examAttempt, stageEvents }))
 })
 
 // POST /recruiter/postings/:id/rank — manual ranking trigger
@@ -433,6 +464,32 @@ const triggerRanking = asyncHandler(async (req, res) => {
   await queues.applicationQueue.add({ jobPostingId: posting.id, action: 'rank_posting' }, defaultOpts)
 
   return res.json(new ApiResponse(200, { message: 'Ranking started' }))
+})
+
+// POST /recruiter/postings/:id/finalize-selection — recruiter reviews the
+// ranked list, picks who to select, and sends decisions. Selected candidates
+// get a "selected" email; everyone else ranked gets a "rejected" email.
+// The posting is then closed (no longer accepts applications).
+const finalizeSelection = asyncHandler(async (req, res) => {
+  const posting = await prisma.jobPosting.findFirst({ where: { id: req.params.id, recruiterId: req.user.id } })
+  if (!posting) throw new ApiError(404, 'Posting not found')
+
+  const selectedApplicationIds = req.body.selectedApplicationIds || []
+  if (!Array.isArray(selectedApplicationIds) || selectedApplicationIds.length === 0) {
+    throw new ApiError(400, 'Select at least one candidate before sending decisions.')
+  }
+
+  let result
+  try {
+    result = await pipelineService.finalizeSelection(posting.id, req.user.id, selectedApplicationIds)
+  } catch (err) {
+    throw new ApiError(400, err.message || 'Failed to send decisions')
+  }
+
+  return res.json(new ApiResponse(200, {
+    message: `Decisions sent — ${result.selectedCount} selected, ${result.rejectedCount} rejected. Posting closed.`,
+    ...result
+  }))
 })
 
 // GET /recruiter/postings/:id/stats — counts, avg scores, funnel data
@@ -648,6 +705,6 @@ const getThresholdSuggestions = asyncHandler(async (req, res) => {
 module.exports = {
   createPosting, getMyPostings, getPosting, updatePosting, closePosting, clonePosting,
   getPublicPosting, submitApplication,
-  getPostingApplications, getApplicationDetail, triggerRanking, getPostingStats,
+  getPostingApplications, getApplicationDetail, triggerRanking, finalizeSelection, getPostingStats,
   getRecruiterOverview, getThresholdSuggestions
-}npx prisma migrate resolve --applied 0_init
+}

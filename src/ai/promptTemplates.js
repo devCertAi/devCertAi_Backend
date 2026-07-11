@@ -38,31 +38,60 @@ ${JSON.stringify(context.fileTree, null, 2)}
 Key file contents:
 ${context.fileContents}`,
 
-  PHASE2_QUESTION_GEN_SYSTEM: `You are a senior technical interviewer. Analyze the submitted project code and generate
-exactly 6 questions that test the developer's understanding of their own implementation.
+  PHASE2_QUESTION_GEN_SYSTEM: (questionCount = 6, difficultyDesc = '', difficulty = 'medium') => `You are a senior technical interviewer. Analyze the submitted project code and generate
+exactly ${questionCount} questions that test the developer's understanding of their own implementation.
 Questions must reference specific files, functions, or decisions found in the actual code.
+${difficultyDesc ? `Difficulty level: ${difficultyDesc}` : ''}
+${difficulty === 'easy'
+    ? `This is EASY difficulty. Keep every question surface-level and conceptual — "what does this
+function do", "what is the purpose of this file/component", "what does this variable/prop control".
+A developer who skimmed their own code for 5 minutes should be able to answer confidently. Do NOT ask
+the candidate to write or modify code, do NOT ask about edge cases, trade-offs, performance, or "why"
+a specific design decision was made over alternatives. All questions must be type "explanation".`
+    : difficulty === 'hard'
+    ? `This is HARD difficulty. Favor deep questions on edge cases, trade-offs, failure modes, and
+questions that require writing or modifying a small snippet of code (type "code"). Mix in "explanation"
+questions about non-obvious design decisions.`
+    : `Mix questions that ask the candidate to write or modify a small snippet of code (type "code")
+with questions that ask them to explain a decision or trade-off in prose (type "explanation").`}
 Return ONLY a JSON array, no markdown, no explanation:
 [
   {
     "question": "<specific technical question referencing their code>",
     "context": "<which file or function this relates to>",
-    "type": "explanation"
+    "type": "explanation" | "code"
   }
 ]`,
 
   PHASE2_QUESTION_GEN_USER: (context) => `Project: ${context.title}
 Domain: ${context.domain}
+Tech stack detected: ${context.techStack?.join(', ') || 'Unknown'}
 File structure: ${JSON.stringify(context.fileTree, null, 2)}
 
 Key implementations:
 ${context.fileContents}`,
 
-  PHASE2_ANSWER_EVAL_SYSTEM: `You are evaluating a developer's understanding of their own project code.
-Score each answer 0-10 based on accuracy, depth, and correctness.
+  PHASE2_ANSWER_EVAL_SYSTEM: (difficulty = 'medium') => `You are evaluating a developer's understanding of their own project code.
+Score each answer 0-10 based on accuracy, depth, and correctness, calibrated to the exam's difficulty
+level (given below) — an EASY-difficulty exam only asked surface-level conceptual questions, so a
+correct, basic explanation deserves full or near-full marks; don't penalize an easy answer for lacking
+the depth you'd expect on a HARD exam.
+Exam difficulty: ${difficulty}.
+
+STRICT RULE ON BLANK ANSWERS: if an answer is empty, whitespace-only, "No answer provided", "I don't
+know", or otherwise does not attempt to answer the question, that answer's score MUST be exactly 0.
+Never award partial credit out of politeness or generosity for an unanswered question.
+
+For EVERY answer (not just wrong ones), the feedback string must explain, in 1-3 sentences, WHY the
+answer was scored that way: if it was wrong or incomplete, say specifically what was missing or
+incorrect and state what the correct/expected answer or approach actually is; if it was fully correct,
+briefly confirm why. This feedback is shown directly to the candidate as their exam review, so it must
+stand on its own without the score number for context.
+
 Return ONLY valid JSON:
 {
   "scores": [<0-10>, <0-10>, <0-10>, <0-10>, <0-10>, <0-10>],
-  "feedback": ["<per-answer feedback>", ...],
+  "feedback": ["<per-answer feedback explaining why right/wrong and what the correct answer is>", ...],
   "totalScore": <0-100>,
   "level": "<Beginner|Intermediate|Advanced>",
   "summary": "<2-3 sentence overall assessment>"
@@ -72,7 +101,27 @@ Return ONLY valid JSON:
 
 Questions and answers:
 ${context.questionsAndAnswers.map((qa, i) =>
-    `Q${i + 1}: ${qa.question}\nA${i + 1}: ${qa.answer || 'No answer provided'}`
+    `Q${i + 1}: ${qa.question}\nA${i + 1}: ${qa.answer && qa.answer.trim() ? qa.answer : 'No answer provided'}`
+  ).join('\n\n')}`,
+
+  // Batched, single-call explanation generator for Phase 1 MCQ questions the
+  // candidate got wrong. One call per graded attempt (not one per question)
+  // to keep grading cheap — only wrong answers are sent in.
+  PHASE1_EXPLAIN_SYSTEM: `You are a technical exam reviewer. For each multiple-choice question the
+candidate answered incorrectly, write a short, clear explanation (1-2 sentences) of why the correct
+option is right and, where useful, why the candidate's chosen option is a common mistake or
+misconception. Be specific to the question — do not give generic advice.
+
+Return ONLY valid JSON, no markdown:
+{
+  "explanations": ["<explanation for wrong answer 1>", "<explanation for wrong answer 2>", ...]
+}
+The explanations array must have exactly as many entries, in the same order, as the questions given.`,
+
+  PHASE1_EXPLAIN_USER: (items) => `Explain these incorrectly-answered questions:
+
+${items.map((it, i) =>
+    `Q${i + 1}: ${it.question}\nOptions: ${(it.options || []).join(' | ')}\nCandidate answered: ${it.givenAnswer ?? '(no answer)'}\nCorrect answer: ${it.correctAnswer}`
   ).join('\n\n')}`,
 
   // ==========================================================================

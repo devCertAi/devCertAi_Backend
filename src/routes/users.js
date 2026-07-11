@@ -9,23 +9,28 @@ const {
   getDashboard, updateSkills, deleteAccount,
   getProfileDetail, updateProfileDetail,
   uploadAndParseCV,
+  viewOwnCV,
+  viewUserCV,
+  deleteCV,
   getProfileCompleteness,
   upload,
   uploadCVMulter
 } = require('../controllers/userController')
 
-const optionalAuth = (req, res, next) => {
+const requireAuth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1]
-  if (!token) return next()
+  if (!token) return res.status(401).json({ success: false, message: 'Please log in to view this page.' })
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET)
     req.user = { ...decoded, id: decoded.userId }
-  } catch {}
-  next()
+    next()
+  } catch {
+    return res.status(401).json({ success: false, message: 'Your session has expired. Please log in again.' })
+  }
 }
 
 // ── public ────────────────────────────────────────────────────────────────────
-router.get('/profile/:username',      optionalAuth, getPublicProfile)
+router.get('/profile/:username',      requireAuth, getPublicProfile)
 
 // ── authenticated ─────────────────────────────────────────────────────────────
 // NOTE: POST /become-recruiter was removed. It used to flip role:'recruiter'
@@ -45,6 +50,11 @@ router.put('/profile-detail',         auth, updateProfileDetail)
 
 // ── CV upload + AI parse (10 MB limit) ────────────────────────────────────────
 router.post('/upload-cv',             auth, uploadCVMulter.single('cv'),       uploadAndParseCV)
+
+// ── CV view — proxied through our own domain (never links straight to Cloudinary) ──
+router.get('/me/cv',                  auth,        viewOwnCV)
+router.get('/:username/cv',           requireAuth, viewUserCV)
+router.delete('/cv',                  auth,        deleteCV)
 
 // ── profile completeness (dashboard widget + apply gate) ──────────────────────
 router.get('/profile-completeness',   auth, getProfileCompleteness)

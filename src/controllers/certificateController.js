@@ -23,6 +23,10 @@ const getUserCertificates = asyncHandler(async (req, res) => {
     where: { userId: req.user.id },
     orderBy: { createdAt: 'desc' },
     include: {
+      // FIX: `user` was missing here, so every certificate in the list came
+      // back with `cert.user === undefined`. The frontend card/preview then
+      // had no real name to show and silently fell back to a placeholder.
+      user: { select: { name: true, username: true, avatar: true } },
       project: { select: { title: true } }
     }
   })
@@ -62,7 +66,9 @@ const downloadCertificate = asyncHandler(async (req, res) => {
     type: cert.type,
     verificationId: cert.verificationId,
     projectTitle: cert.project?.title,
-    issuedDate
+    issuedDate,
+    difficulty: cert.difficulty,
+    metadata: cert.metadata
   })
 
   res.setHeader('Content-Type', 'application/pdf')

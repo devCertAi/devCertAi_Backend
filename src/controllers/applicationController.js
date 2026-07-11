@@ -3,6 +3,7 @@ const { ApiError } = require('../utils/ApiError')
 const { ApiResponse } = require('../utils/ApiResponse')
 const asyncHandler = require('../utils/asyncHandler')
 const pipelineService = require('../services/pipelineService')
+const { signRawUrl } = require('../services/storageService')
 const multer = require('multer')
 const fs = require('fs')
 const path = require('path')
@@ -47,6 +48,7 @@ const getApplication = asyncHandler(async (req, res) => {
     include: { jobPosting: { select: { id: true, title: true, companyName: true, examEnabled: true, assignmentBrief: true, examDurationMin: true } } }
   })
   if (!application) throw new ApiError(404, 'Application not found')
+  if (application.resumeUrl) application.resumeUrl = signRawUrl(application.resumeUrl)
 
   let project = null
   if (application.projectId) {

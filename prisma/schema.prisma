@@ -1,11 +1,4 @@
 // schema.prisma — Clean, consolidated schema
-// Changes vs original:
-//  - UserCredits: added signupBonusGranted flag (idempotent bonus)
-//  - UserCredits: renamed fields for clarity, added purchasedCreditsExpiresAt
-//  - CreditTransaction: added expiresAt for purchased credits tracking
-//  - User: added premiumPlan field so we know which plan they're on
-//  - Removed duplicate/unused fields (none found in this schema)
-//  - Added compound indexes for common query patterns
 
 generator client {
   provider = "prisma-client-js"
@@ -31,14 +24,14 @@ model OtpStore {
 
 model RefreshToken {
   id          String    @id @default(cuid())
-  token       String    @unique        // SHA-256 hash of the actual JWT
+  token       String    @unique
   userId      String?
   recruiterId String?
   userAgent   String?
   ip          String?
   expiresAt   DateTime
   createdAt   DateTime  @default(now())
-  revokedAt   DateTime?               // null = active
+  revokedAt   DateTime?
 
   user        User?      @relation(fields: [userId],      references: [id], onDelete: Cascade)
   recruiter   Recruiter? @relation(fields: [recruiterId], references: [id], onDelete: Cascade)
@@ -58,26 +51,22 @@ model User {
   googleId         String?   @unique
   avatar           String?
   username         String    @unique
-  role             String    @default("user")   // user | recruiter | admin
+  role             String    @default("user")
 
-  // Premium
   isPremium        Boolean   @default(false)
-  premiumPlan      String?   // monthly | yearly | recruiter
+  premiumPlan      String?
   premiumExpiresAt DateTime?
 
-  // Email verification
   isEmailVerified  Boolean   @default(false)
   emailVerifyToken String?
   resetToken       String?
   resetTokenExpiry DateTime?
 
-  // Preferences
   notifyOnMatch    Boolean   @default(true)
 
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  // Relations
   applications       Application[]
   certificates       Certificate[]
   examAttempts       ExamAttempt[]
@@ -101,23 +90,19 @@ model UserCredits {
   id     String @id @default(cuid())
   userId String @unique
 
-  // Free monthly allowance (resets every cycleResetAt)
-  projectEvalLimit Int @default(3)   // free project evals per month
+  projectEvalLimit Int @default(3)
   projectEvalUsed  Int @default(0)
-  skillExamLimit   Int @default(1)   // free skill exams per month
+  skillExamLimit   Int @default(1)
   skillExamUsed    Int @default(0)
 
-  // Purchased/bonus credits (expire after 6 months, stacking)
   bonusProjectCredits Int      @default(0)
   bonusSkillCredits   Int      @default(0)
-  bonusExpiresAt      DateTime? // when purchased credits expire (6 months from purchase)
+  bonusExpiresAt      DateTime?
 
-  // Signup bonus tracking
   signupBonusGranted Boolean  @default(false)
 
-  // Monthly cycle tracking
   cycleStartedAt DateTime @default(now())
-  cycleResetAt   DateTime               // when free credits next reset
+  cycleResetAt   DateTime
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -131,18 +116,14 @@ model CreditTransaction {
   id     String @id @default(cuid())
   userId String
 
-  kind   String  // monthly_reset | project_eval | skill_exam | bonus_grant |
-                 // signup_bonus | recruiter_free_credits | recruiter_plan_purchase |
-                 // monthly_plan_purchase | yearly_plan_purchase
-  bucket String? // project | skill
-  amount Int     // positive = credit added, negative = credit consumed
-  source String? // free | bonus | purchased
+  kind   String
+  bucket String?
+  amount Int
+  source String?
 
-  // Snapshot of balance after this transaction (for audit/display)
   balanceProjectAfter Int?
   balanceSkillAfter   Int?
 
-  // For bonus grants: when they expire
   expiresAt DateTime?
 
   meta      Json?
@@ -162,10 +143,10 @@ model Payment {
   userId            String
   razorpayOrderId   String   @unique
   razorpayPaymentId String?
-  amount            Int      // in paise (INR)
+  amount            Int
   currency          String   @default("INR")
-  status            String   @default("pending") // pending | paid | failed | refunded
-  plan              String   // monthly | yearly | recruiter
+  status            String   @default("pending")
+  plan              String
   createdAt         DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -179,16 +160,18 @@ model Payment {
 model QuestionBank {
   id        String  @id @default(cuid())
   domain    String
+  category  String?
   phase     Int
   level     String
   question  String
   options   Json?
   answer    String
-  type      String  // mcq | text
+  type      String
   isActive  Boolean @default(true)
   createdAt DateTime @default(now())
 
   @@index([domain, phase, isActive])
+  @@index([domain, category, phase, isActive])
 }
 
 model ExamAttempt {
@@ -197,32 +180,31 @@ model ExamAttempt {
   domain            String
   phase             Int
   status            String    @default("pending")
-  // pending | in_progress | submitted | completed | terminated
 
   phase1Score       Int?
   phase2Score       Int?
   totalScore        Int?
-  level             String?   // Beginner | Intermediate | Expert
-
-  questions         Json?     // array of {id, question, options, answer, level, type}
-  answers           Json?     // {questionId: answer} for phase1, {index: answer} for phase2
-  projectId         String?   // GitHub URL for phase 2
+  level             String?
+  difficulty String?
+  questionCount     Int?
+  questions         Json?
+  answers           Json?
+  projectId         String?
 
   startedAt         DateTime?
   submittedAt       DateTime?
   timeLimitSec      Int       @default(2700)
 
-  // Proctoring
   tabSwitchCount    Int       @default(0)
   fullscreenExits   Int       @default(0)
   proctorFlags      Json?
   terminationReason String?
 
   evaluationReport  Json?
+  category String?
 
-  // Relations
   applicationId String? @unique
-  source        String? // self | pipeline | demo
+  source        String?
 
   createdAt DateTime @default(now())
 
@@ -247,7 +229,6 @@ model Project {
   zipFileUrl       String?
   domain           String
   status           String      @default("pending")
-  // pending | evaluating | evaluated | failed
   score            Int?
   level            String?
   evaluationReport Json?
@@ -267,7 +248,7 @@ model Project {
 model Certificate {
   id             String  @id @default(cuid())
   userId         String
-  type           String  // skill | project
+  type           String
   domain         String
   level          String
   score          Int
@@ -361,7 +342,7 @@ model Company {
   industry           String?
   size               String?
   description        String?
-  verificationStatus String   @default("unverified") // unverified | pending | verified | rejected
+  verificationStatus String   @default("unverified")
   verificationDocUrl String?
   verificationNote   String?
   verifiedAt         DateTime?
@@ -385,18 +366,15 @@ model JobPosting {
   minExperience Int    @default(0)
   openings      Int    @default(1)
 
-  // Screening thresholds
   ruleScoreThreshold Int @default(60)
   aiMatchThreshold   Int @default(50)
 
-  // Assignment stage
   assignmentEnabled      Boolean   @default(false)
-  assignmentBrief        String?   // visible to student
-  assignmentEvalCriteria String?   // private eval criteria for AI scoring
-  assignmentDeadlineDate DateTime? // absolute date > createdAt
-  assignmentDeadlineDays Int?      // fallback days-based deadline
+  assignmentBrief        String?
+  assignmentEvalCriteria String?
+  assignmentDeadlineDate DateTime?
+  assignmentDeadlineDays Int?
 
-  // Exam stage
   examEnabled     Boolean @default(true)
   examPhase1      Boolean @default(true)
   examPhase2      Boolean @default(false)
@@ -404,16 +382,13 @@ model JobPosting {
   examDurationMin Int     @default(30)
   examWindowHours Int     @default(48)
 
-  // Manual pipeline mode
   manualMode       Boolean @default(false)
   hiringCreditUsed Boolean @default(false)
 
-  // Scoring
   scoringWeights   Json?
   cutoffMode       String @default("count")
   cutoffPercentage Int?
 
-  // Misc
   matchNotificationCap Int  @default(200)
   rankingSummary       Json?
   questionBank         Json?
@@ -460,36 +435,30 @@ model Application {
   resumeUrl  String?
   resumeText String?
 
-  // AI scoring
   ruleScore     Int?
   aiMatchScore  Int?
   aiReasoning   String?
   missingSkills String[] @default([])
 
-  // Pipeline stage
-  stage  String @default("applied")    // applied | screening | assignment | exam | ranked | selected | rejected
-  status String @default("in_progress") // in_progress | selected | rejected
+  stage  String @default("applied")
+  status String @default("in_progress")
 
   rejectionReason    String?
   selectionNarrative String?
 
-  // Assignment
   assignmentSubmissionId String?  @unique
   assignmentDeadlineAt   DateTime?
 
-  // Exam
   examWindowExpiresAt DateTime?
   examAttemptId       String?   @unique
-  phase2ExamAttemptId String?   @unique  // phase 2 pipeline exam
+  phase2ExamAttemptId String?   @unique
 
-  // Scoring
   projectId    String?
   projectScore Float?
   examScore    Float?
   finalScore   Float?
   rank         Int?
 
-  // Reminder tracking
   assignmentRemindersSent Int @default(0)
   examRemindersSent       Int @default(0)
 
