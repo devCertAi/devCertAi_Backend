@@ -258,6 +258,7 @@ model Certificate {
   verificationId String  @unique @default(cuid())
   isPublic       Boolean @default(true)
   createdAt      DateTime @default(now())
+  difficulty String?
 
   examAttempt ExamAttempt? @relation(fields: [examAttemptId], references: [id])
   project     Project?     @relation(fields: [projectId],     references: [id])
