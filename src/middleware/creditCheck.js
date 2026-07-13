@@ -16,9 +16,8 @@ const creditService = require('../services/creditService')
  */
 const creditCheck = (bucket, amount = 1) => async (req, res, next) => {
   try {
-    // Premium users bypass credit checks
-    if (req.user?.isPremium) return next()
-
+    // No plan is unlimited — every user (including premium) draws from a
+    // real, finite credit balance funded by whatever plan they bought.
     const { canProceed, balance } = await creditService.checkCredit(req.user.id, bucket)
     const creditsAvailable = balance[bucket].remaining
 
@@ -56,8 +55,6 @@ const creditCheck = (bucket, amount = 1) => async (req, res, next) => {
  */
 const creditCheckForHiring = async (req, res, next) => {
   try {
-    if (req.user?.isPremium) return next()
-
     const { expectedCvCount } = req.body
     if (!expectedCvCount || expectedCvCount <= 0) return next()
 

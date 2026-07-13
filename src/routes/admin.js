@@ -5,7 +5,8 @@ const admin = require('../middleware/admin')
 const {
   getStats, getUsers, updateUserRole, banUser,
   addQuestion, getQuestions, updateQuestion, deleteQuestion,
-  bulkImportQuestions, getQueueStats, getCompanies, verifyCompany
+  bulkImportQuestions, getQuestionBankStats, recomputeQuestionBankStats,
+  getQueueStats, getCompanies, verifyCompany
 } = require('../controllers/adminController')
 const {
   createTestimonial, updateTestimonial, deleteTestimonial
@@ -21,6 +22,8 @@ router.delete('/users/:id',           banUser)
 
 router.post('/questions',             addQuestion)
 router.get('/questions',              getQuestions)
+router.get('/questions/stats',        getQuestionBankStats)
+router.post('/questions/stats/recompute', recomputeQuestionBankStats)
 router.put('/questions/:id',          updateQuestion)
 router.delete('/questions/:id',       deleteQuestion)
 router.post('/questions/bulk-import', bulkImportQuestions)

@@ -6,6 +6,8 @@ const notificationService = require('../services/notificationService')
 const queues = require('../queues')
 const { defaultOpts } = queues
 const { safeRedis } = require('../config/redis')
+const { adjustStat, recomputeBucket, recomputeAll, getCategoryCountsForDomains } = require('../services/questionStatsService')
+const { DOMAINS, EXAM_CATEGORIES, normalizeDomain, normalizeCategory } = require('../config/examCategories')
 
 // GET /stats
 const getStats = asyncHandler(async (req, res) => {
@@ -141,15 +143,40 @@ const banUser = asyncHandler(async (req, res) => {
 
 // POST /questions
 const addQuestion = asyncHandler(async (req, res) => {
-  const { domain, phase, level, question, options, answer, type } = req.body
+  const { domain, phase, level, category, question, options, answer, type } = req.body
 
-  if (!domain || !phase || !level || !question || !answer || !type) {
-    throw new ApiError(400, 'domain, phase, level, question, answer, and type are required')
+  if (!domain || !phase || !level || !category || !question || !answer || !type) {
+    throw new ApiError(400, 'domain, phase, level, category, question, answer, and type are required')
   }
 
+  // Normalize domain/category to their canonical spelling BEFORE writing.
+  // This is the fix for questions silently landing in an invisible bucket
+  // (e.g. "frontend" or "Programming" typed instead of the canonical
+  // "Frontend" / "Programming Languages") — such a row would still exist in
+  // QuestionBank, but questionStatsService's exact-match domain lookup would
+  // never surface it, so the candidate-facing category picker showed
+  // "No sections have questions available" despite the question existing.
+  const normalizedDomain = normalizeDomain(domain)
+  if (!normalizedDomain) {
+    throw new ApiError(400, `Invalid domain "${domain}". Must be one of: ${DOMAINS.join(', ')}`)
+  }
+  const normalizedCategory = normalizeCategory(normalizedDomain, category)
+  if (!normalizedCategory) {
+    throw new ApiError(
+      400,
+      `Invalid category "${category}" for domain "${normalizedDomain}". Must be one of: ${(EXAM_CATEGORIES[normalizedDomain] || []).join(', ')}`
+    )
+  }
+
+  const parsedPhase = parseInt(phase)
+
   const q = await prisma.questionBank.create({
-    data: { domain, phase: parseInt(phase), level, question, options: options || [], answer, type }
+    data: { domain: normalizedDomain, phase: parsedPhase, level, category: normalizedCategory, question, options: options || [], answer, type }
   })
+
+  // Keep the pre-aggregated stats bucket in sync instead of ever COUNTing
+  // QuestionBank live — see questionStatsService.js.
+  await adjustStat(normalizedDomain, normalizedCategory, parsedPhase, level, +1)
 
   return res.status(201).json(new ApiResponse(201, { question: q }))
 })
@@ -180,7 +207,10 @@ const getQuestions = asyncHandler(async (req, res) => {
 
 // PUT /questions/:id
 const updateQuestion = asyncHandler(async (req, res) => {
-  const { question, options, answer, level, isActive } = req.body
+  const { question, options, answer, level, category, isActive } = req.body
+
+  const existing = await prisma.questionBank.findUnique({ where: { id: req.params.id } })
+  if (!existing) throw new ApiError(404, 'Question not found')
 
   const updated = await prisma.questionBank.update({
     where: { id: req.params.id },
@@ -189,19 +219,46 @@ const updateQuestion = asyncHandler(async (req, res) => {
       ...(options && { options }),
       ...(answer && { answer }),
       ...(level && { level }),
+      ...(category && { category }),
       ...(isActive !== undefined && { isActive })
     }
   })
+
+  // A question only counts toward a bucket while isActive — so a change to
+  // level, category, or isActive can move it out of one bucket and/or into
+  // another. Handle every combination explicitly rather than guessing.
+  const wasCounted = existing.isActive
+  const isCounted = updated.isActive
+  const movedBucket = existing.level !== updated.level || existing.category !== updated.category
+
+  if (wasCounted && !isCounted) {
+    await adjustStat(existing.domain, existing.category, existing.phase, existing.level, -1)
+  } else if (!wasCounted && isCounted) {
+    await adjustStat(updated.domain, updated.category, updated.phase, updated.level, +1)
+  } else if (wasCounted && isCounted && movedBucket) {
+    await adjustStat(existing.domain, existing.category, existing.phase, existing.level, -1)
+    await adjustStat(updated.domain, updated.category, updated.phase, updated.level, +1)
+  }
 
   return res.json(new ApiResponse(200, { question: updated }))
 })
 
 // DELETE /questions/:id — soft delete
 const deleteQuestion = asyncHandler(async (req, res) => {
+  const existing = await prisma.questionBank.findUnique({ where: { id: req.params.id } })
+  if (!existing) throw new ApiError(404, 'Question not found')
+
   await prisma.questionBank.update({
     where: { id: req.params.id },
     data: { isActive: false }
   })
+
+  // Only decrement if it was actually counted before (an already-inactive
+  // question being "deleted" again shouldn't double-decrement).
+  if (existing.isActive) {
+    await adjustStat(existing.domain, existing.category, existing.phase, existing.level, -1)
+  }
+
   return res.json(new ApiResponse(200, {}, 'Question deactivated'))
 })
 
@@ -212,18 +269,79 @@ const bulkImportQuestions = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'questions array is required')
   }
 
-  const data = questions.map(q => ({
-    domain: q.domain,
-    phase: parseInt(q.phase),
-    level: q.level,
-    question: q.question,
-    options: q.options || [],
-    answer: q.answer,
-    type: q.type || 'mcq'
-  }))
+  // Normalize every row's domain/category to its canonical spelling BEFORE
+  // writing — bulk import is the single most likely place for a batch of
+  // rows to be silently mis-cased (e.g. a spreadsheet/CSV column that says
+  // "frontend" or "Programming" instead of "Frontend" / "Programming
+  // Languages"), which is exactly what produced buckets that existed in
+  // QuestionBank but were invisible to the candidate-facing category picker
+  // (see questionStatsService.getCategoryCountsForDomains). Reject the whole
+  // import with a precise error rather than silently importing bad rows.
+  const rejected = []
+  const data = questions.map((q, i) => {
+    const normalizedDomain = normalizeDomain(q.domain)
+    if (!normalizedDomain) {
+      rejected.push(`Row ${i + 1}: invalid domain "${q.domain}"`)
+      return null
+    }
+    const normalizedCategory = normalizeCategory(normalizedDomain, q.category)
+    if (!normalizedCategory) {
+      rejected.push(`Row ${i + 1}: invalid category "${q.category}" for domain "${normalizedDomain}"`)
+      return null
+    }
+    return {
+      domain: normalizedDomain,
+      category: normalizedCategory,
+      phase: parseInt(q.phase),
+      level: q.level,
+      question: q.question,
+      options: q.options || [],
+      answer: q.answer,
+      type: q.type || 'mcq'
+    }
+  })
+
+  if (rejected.length > 0) {
+    throw new ApiError(400, `Bulk import rejected — fix these rows and retry: ${rejected.join('; ')}`)
+  }
 
   const result = await prisma.questionBank.createMany({ data, skipDuplicates: true })
+
+  // skipDuplicates means we can't tell from result.count alone how many
+  // landed in each bucket, so recompute the exact count for just the
+  // buckets this import touched — a handful of scoped COUNT queries, not a
+  // full-table scan, and this only happens on an admin bulk-import action.
+  const buckets = new Map()
+  for (const d of data) {
+    if (!d.domain || !d.category || !d.level) continue
+    buckets.set(`${d.domain}|${d.category}|${d.phase}|${d.level}`, d)
+  }
+  for (const d of buckets.values()) {
+    await recomputeBucket(d.domain, d.category, d.phase, d.level)
+  }
+
   return res.status(201).json(new ApiResponse(201, { created: result.count }, `${result.count} questions imported`))
+})
+
+// GET /questions/stats — the "separate table" of how many questions exist
+// per domain/category/difficulty. Reads ONLY the small pre-aggregated
+// QuestionBankStats table (no COUNT over QuestionBank), so this is cheap
+// to call as often as the admin panel wants.
+const getQuestionBankStats = asyncHandler(async (req, res) => {
+  const counts = await getCategoryCountsForDomains(DOMAINS, 1)
+  return res.json(new ApiResponse(200, { counts }))
+})
+
+// POST /questions/stats/recompute — rebuilds QuestionBankStats from the real
+// QuestionBank table. Use this once after adding the QuestionBankStats model
+// to an existing database (pre-existing questions were never counted since
+// adjustStat only fires on new add/edit/delete actions going forward), or any
+// time the numbers shown to candidates look wrong/stale. Safe to re-run any
+// time — it's idempotent, just does a real GROUP BY, so don't wire it into a
+// candidate-facing request path.
+const recomputeQuestionBankStats = asyncHandler(async (req, res) => {
+  const result = await recomputeAll()
+  return res.json(new ApiResponse(200, result, 'Question bank stats recomputed'))
 })
 
 // GET /queues — Bull queue stats
@@ -330,5 +448,7 @@ const verifyCompany = asyncHandler(async (req, res) => {
 module.exports = {
   getStats, getUsers, updateUserRole, banUser,
   addQuestion, getQuestions, updateQuestion, deleteQuestion, bulkImportQuestions,
+  getQuestionBankStats,
+  recomputeQuestionBankStats,
   getQueueStats, getCompanies, verifyCompany
 }

@@ -268,6 +268,19 @@ model Certificate {
   @@index([verificationId])
 }
 
+model QuestionBankStats {
+  id        String   @id @default(cuid())
+  domain    String
+  category  String
+  phase     Int
+  level     String
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@unique([domain, category, phase, level])
+  @@index([domain, phase])
+}
+
 // ─── Notifications ───────────────────────────────────────────────────────────
 
 model Notification {

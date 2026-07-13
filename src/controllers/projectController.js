@@ -13,6 +13,7 @@ const path = require('path')
 const os = require('os')
 const { deleteFile } = require('../services/storageService')
 const creditService = require('../services/creditService')
+const { estimateProjectSize } = require('../utils/projectSizeEstimator')
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } })
 
@@ -53,11 +54,36 @@ const submitProject = asyncHandler(async (req, res) => {
     }
   }
 
-  // Credit gate — runs after validation so a rejected submission never costs
-  // the user a credit. Premium users bypass this entirely (unlimited).
-  if (!req.user.isPremium) {
-    await creditService.consumeCredit(userId, 'project', { title, domain })
+  // Size detection — always re-derived server-side from the actual source
+  // (never trust a tier/cost the client might send) so pricing can't be
+  // spoofed. Runs after validation, before the credit gate, so a rejected
+  // submission never costs a credit and a failed size read never blocks
+  // submission (falls back to the cheapest tier).
+  let sizeEstimate
+  try {
+    sizeEstimate = await estimateProjectSize({
+      githubUrl: githubUrl || undefined,
+      zipBuffer: req.file ? req.file.buffer : undefined,
+      liveUrl: !githubUrl && !req.file ? liveUrl : undefined,
+    })
+  } catch (err) {
+    console.error('[submitProject] Size estimation failed, defaulting to Small tier:', err.message)
+    sizeEstimate = { tier: 'small', label: 'Small', creditsCost: 1, estimatedTokens: null, stats: null }
   }
+
+  // Credit gate — runs after validation so a rejected submission never costs
+  // the user a credit. No plan is unlimited — every submission (including
+  // premium accounts) draws real project credits from the user's balance.
+  // The `_debit` snapshot is threaded through the eval job so the worker can
+  // refund this exact charge if the AI evaluation ends up failing — see
+  // "don't deduct credit on failure" fix in projectWorker.js.
+  const creditResult = await creditService.consumeCredit(
+    userId,
+    'project',
+    { title, domain, sizeTier: sizeEstimate.tier, estimatedTokens: sizeEstimate.estimatedTokens },
+    sizeEstimate.creditsCost
+  )
+  const creditDebit = creditResult?._debit
 
   // Handle ZIP upload
   if (req.file) {
@@ -70,11 +96,45 @@ const submitProject = asyncHandler(async (req, res) => {
     data: { userId, title, description, githubUrl, liveUrl, zipFileUrl, domain, status: 'pending' }
   })
 
-  await queues.projectEvalQueue.add({ projectId: project.id }, defaultOpts)
+  await queues.projectEvalQueue.add({ projectId: project.id, creditDebit }, defaultOpts)
 
   return res.status(201).json(new ApiResponse(201, {
     projectId: project.id,
+    sizeTier: sizeEstimate.tier,
+    creditsCharged: sizeEstimate.creditsCost,
     message: 'Project submitted. AI evaluation started — you\'ll be notified when complete.'
+  }))
+})
+
+// GET/POST /estimate-size — preview the size tier & credit cost BEFORE
+// submitting. Accepts the same three source shapes as /submit (githubUrl,
+// liveUrl, or an uploaded zipFile) but does no validation, no queueing, and
+// consumes no credits — it's a pure read used to render the estimate on
+// step 2 of the submit form.
+const estimateSize = asyncHandler(async (req, res) => {
+  const githubUrl = req.body?.githubUrl || req.query?.githubUrl
+  const liveUrl = req.body?.liveUrl || req.query?.liveUrl
+
+  if (!githubUrl && !liveUrl && !req.file) {
+    throw new ApiError(400, 'Provide a githubUrl, liveUrl, or zipFile to estimate')
+  }
+
+  const sizeEstimate = await estimateProjectSize({
+    githubUrl: githubUrl || undefined,
+    zipBuffer: req.file ? req.file.buffer : undefined,
+    liveUrl: !githubUrl && !req.file ? liveUrl : undefined,
+  })
+
+  // Also surface whether the user can currently afford this tier, so the
+  // frontend can show "not enough credits" inline instead of waiting for
+  // the actual submit to fail. No plan is unlimited, so this always runs.
+  const { canProceed, balance } = await creditService.checkCredit(req.user.id, 'project', sizeEstimate.creditsCost)
+
+  return res.json(new ApiResponse(200, {
+    ...sizeEstimate,
+    canAfford: canProceed,
+    balance,
+    unlimited: false,
   }))
 })
 
@@ -234,4 +294,4 @@ module.exports = { submitProject, getUserProjects, getProject, getProjectReport,
     await prisma.project.delete({ where: { id: req.params.id } })
 
     return res.json(new ApiResponse(200, {}, 'Project deleted'))
-  }), validateGithub, upload }
+  }), validateGithub, estimateSize, upload }

@@ -1,14 +1,23 @@
 const { z } = require('zod')
 const {
   DOMAINS,
-  ALL_CATEGORIES,
   DIFFICULTIES,
   MIN_QUESTIONS,
   MAX_QUESTIONS,
   PHASE2_MIN_QUESTIONS,
   PHASE2_MAX_QUESTIONS,
-  isValidCategoryForDomain,
 } = require('../config/examCategories')
+
+// `category` (technology sub-domain, e.g. "React", "HTML & CSS") is a
+// free-form non-empty string rather than a fixed z.enum(ALL_CATEGORIES).
+// Sub-domains are now sourced dynamically from whatever actually has active
+// questions in QuestionBankStats (see examController.getDomains /
+// questionStatsService), not from the static EXAM_CATEGORIES config — so any
+// real, DB-backed category name must not be rejected here before it ever
+// reaches examService's DB-aware lookup/fallback logic. (Frontend/Full
+// Stack's HTML and CSS questions are seeded under one merged 'HTML & CSS'
+// category — see prisma/seed.js — rather than two separate ones.)
+const categoryField = z.string().trim().min(1).max(100)
 
 // Phase 1 requires a technology category + difficulty + question count.
 // Phase 2 is project-based (GitHub repo / ZIP upload analysis) — no category,
@@ -21,14 +30,14 @@ const startExamSchema = z
   .object({
     domain: z.enum(DOMAINS),
     phase: z.number().int().min(1).max(2),
-    category: z.enum(ALL_CATEGORIES).optional(),
+    category: categoryField.optional(),
     difficulty: z.enum(DIFFICULTIES).optional().default('medium'),
     questionCount: z.number().int().optional(),
   })
   .refine(
-    (data) => data.phase !== 1 || isValidCategoryForDomain(data.domain, data.category),
+    (data) => data.phase !== 1 || !!data.category,
     {
-      message: 'Please select a valid technology category for this domain',
+      message: 'Please select a technology category for this domain',
       path: ['category'],
     }
   )
@@ -46,7 +55,7 @@ const startExamSchema = z
 
 const startDemoExamSchema = z.object({
   domain: z.enum(DOMAINS),
-  category: z.enum(ALL_CATEGORIES).optional(),
+  category: categoryField.optional(),
 })
 
 const submitAnswerSchema = z.object({

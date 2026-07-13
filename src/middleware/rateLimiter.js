@@ -45,4 +45,16 @@ const examLimiter = rateLimit({
   message: { success: false, message: 'Too many requests, please slow down a moment.' }
 })
 
-module.exports = { globalLimiter, authLimiter, evalLimiter, examLimiter }
+// Size estimation is a cheap, read-only preview (no AI calls, no credit
+// consumption) fired from the submit form on blur/file-select, so it needs
+// more headroom than evalLimiter — but it still hits the GitHub API, so it
+// isn't unlimited either.
+const sizeEstimateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many size checks, please wait a moment.' }
+})
+
+module.exports = { globalLimiter, authLimiter, evalLimiter, examLimiter, sizeEstimateLimiter }

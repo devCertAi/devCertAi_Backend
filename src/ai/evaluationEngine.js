@@ -19,14 +19,16 @@ async function evaluateProject(project) {
     techStack: []
   }
 
+  const tier = project.sizeTier || 'small'
+
   if (project.githubUrl) {
-    console.log('[EvalEngine] Analyzing GitHub repo...')
-    const analyzed = await analyzeGithubRepo(project.githubUrl)
+    console.log('[EvalEngine] Analyzing GitHub repo... tier:', tier)
+    const analyzed = await analyzeGithubRepo(project.githubUrl, { tier })
     Object.assign(context, analyzed)
     console.log('[EvalEngine] GitHub analysis done')
   } else if (project.zipFileUrl) {
-    console.log('[EvalEngine] Analyzing ZIP...')
-    const analyzed = await analyzeZip(project.zipFileUrl)
+    console.log('[EvalEngine] Analyzing ZIP... tier:', tier)
+    const analyzed = await analyzeZip(project.zipFileUrl, { tier })
     Object.assign(context, analyzed)
     console.log('[EvalEngine] ZIP analysis done')
   } else if (project.liveUrl) {
