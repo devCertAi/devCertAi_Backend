@@ -13,7 +13,15 @@ function baseTemplate(content) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark light">
+  <meta name="supported-color-schemes" content="dark light">
   <style>
+    /* Tell Gmail/Outlook/Apple Mail dark-mode engines this is already a
+       dark design so they don't "helpfully" re-invert our own colors —
+       that auto-inversion is the usual cause of dark text landing on a
+       dark background even when our own CSS looks correct. */
+    :root { color-scheme: dark light; supported-color-schemes: dark light; }
+    [data-ogsc] .card, [data-ogsc] body { background: ${BG} !important; }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: ${BG}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: ${TEXT}; }
     .wrapper { max-width: 600px; margin: 0 auto; padding: 40px 20px; }
@@ -37,14 +45,14 @@ function baseTemplate(content) {
   </style>
 </head>
 <body>
-  <div class="wrapper">
-    <div class="card">
-      <div class="logo">DevCert</div>
+  <div class="wrapper" style="max-width:600px; margin:0 auto; padding:40px 20px;">
+    <div class="card" style="background:${SURFACE}; border-radius:16px; border:1px solid rgba(255,255,255,0.07); padding:40px; color:${TEXT};">
+      <div class="logo" style="font-size:22px; font-weight:700; color:${BRAND_COLOR}; letter-spacing:-0.5px; margin-bottom:32px;">Proeva</div>
       ${content}
     </div>
-    <div class="footer">
-      <p style="margin-bottom:8px">© ${new Date().getFullYear()} DevCert. AI-powered skill certification.</p>
-      <a href="${process.env.FRONTEND_URL}/settings" class="unsubscribe">Manage email preferences</a>
+    <div class="footer" style="text-align:center; color:${MUTED}; font-size:12px; margin-top:24px;">
+      <p style="margin-bottom:8px">© ${new Date().getFullYear()} Proeva. AI-powered skill certification.</p>
+      <a href="${process.env.FRONTEND_URL}/settings" class="unsubscribe" style="color:${MUTED}; text-decoration:underline; font-size:12px;">Manage email preferences</a>
     </div>
   </div>
 </body>
@@ -52,27 +60,45 @@ function baseTemplate(content) {
 }
 
 async function sendEmail({ to, subject, html }) {
-  if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
-    console.log(`[Email] Would send to ${to}: ${subject}`)
+  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    // FIX: this used to be the ONLY signal that email was disabled, and it
+    // was easy to miss in a busy log stream — certificate/exam emails would
+    // appear to "just not happen" with no obvious cause. nodemailer.js now
+    // also warns once at boot, but keep this per-send warning too since it's
+    // the thing that shows up right next to the specific user/subject.
+    console.warn(`[Email] SKIPPED (SMTP_USER/SMTP_PASS not set) — would have sent to ${to}: "${subject}"`)
     return
   }
-  await transporter.sendMail({
-    from: `"DevCert" <${process.env.GMAIL_USER}>`,
-    to, subject, html
-  })
+  try {
+    await transporter.sendMail({
+      from: `"Proeva" <${process.env.MAIL_FROM || process.env.SMTP_USER}>`,
+      to, subject, html
+    })
+    console.log(`[Email] Sent to ${to}: "${subject}"`)
+  } catch (err) {
+    // FIX: previously any transporter.sendMail failure (bad credentials,
+    // provider rate limit, invalid recipient, etc.) bubbled up as an
+    // unhandled rejection inside emailWorker's job processor and was only
+    // visible as a generic "[Queue] Inline job failed" / Bull failed-job
+    // log — with no indication it was specifically an email delivery
+    // problem. Log it explicitly here so it's unambiguous, then rethrow
+    // so the queue's normal retry/error handling still applies.
+    console.error(`[Email] FAILED to send to ${to}: "${subject}" —`, err.message)
+    throw err
+  }
 }
 
 // 1. Welcome + Verify Email
 async function sendVerifyEmail(user, verifyUrl) {
   await sendEmail({
     to: user.email,
-    subject: 'Verify your DevCert account',
+    subject: 'Verify your Proeva account',
     html: baseTemplate(`
-      <div class="title">Welcome to DevCert, ${user.name}! 👋</div>
-      <p class="text">You're one step away from getting AI-certified. Verify your email to unlock your account.</p>
-      <a href="${verifyUrl}" class="btn">Verify Email →</a>
-      <hr class="divider">
-      <p class="text" style="font-size:13px">This link expires in 24 hours. If you didn't sign up, you can safely ignore this email.</p>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Welcome to Proeva, ${user.name}! 👋</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">You're one step away from getting AI-certified. Verify your email to unlock your account.</p>
+      <a href="${verifyUrl}" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">Verify Email →</a>
+      <hr class="divider" style="border:none; border-top:1px solid rgba(255,255,255,0.07); margin:24px 0;">
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; font-size:13px">This link expires in 24 hours. If you didn't sign up, you can safely ignore this email.</p>
     `)
   })
 }
@@ -83,13 +109,13 @@ async function sendWelcomeEmail(user) {
     to: user.email,
     subject: "You're verified! Let's get started",
     html: baseTemplate(`
-      <div class="title">You're all set! 🎉</div>
-      <p class="text">Your DevCert account is verified. Here's what to do next:</p>
-      <div class="feature-item"><span class="feature-icon">✓</span><span>Submit a project from GitHub for instant AI evaluation</span></div>
-      <div class="feature-item"><span class="feature-icon">✓</span><span>Take a proctored skill exam to earn a SkillCert</span></div>
-      <div class="feature-item"><span class="feature-icon">✓</span><span>Download and share your certificate on LinkedIn</span></div>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">You're all set! 🎉</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">Your Proeva account is verified. Here's what to do next:</p>
+      <div class="feature-item" style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; color:${TEXT};"><span class="feature-icon" style="color:#4ADE80; font-size:16px; margin-top:2px;">✓</span><span>Submit a project from GitHub for instant AI evaluation</span></div>
+      <div class="feature-item" style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; color:${TEXT};"><span class="feature-icon" style="color:#4ADE80; font-size:16px; margin-top:2px;">✓</span><span>Take a proctored skill exam to earn a SkillCert</span></div>
+      <div class="feature-item" style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; color:${TEXT};"><span class="feature-icon" style="color:#4ADE80; font-size:16px; margin-top:2px;">✓</span><span>Download and share your certificate on LinkedIn</span></div>
       <br>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn">Go to Dashboard →</a>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">Go to Dashboard →</a>
     `)
   })
 }
@@ -98,13 +124,13 @@ async function sendWelcomeEmail(user) {
 async function sendPasswordResetEmail(user, resetUrl) {
   await sendEmail({
     to: user.email,
-    subject: 'Reset your DevCert password',
+    subject: 'Reset your Proeva password',
     html: baseTemplate(`
-      <div class="title">Password Reset Request</div>
-      <p class="text">You requested a password reset. Click the button below to set a new password.</p>
-      <a href="${resetUrl}" class="btn">Reset Password →</a>
-      <hr class="divider">
-      <p class="text" style="font-size:13px">⚠️ This link expires in <strong>1 hour</strong>. If you didn't request this, your account is safe — just ignore this email.</p>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Password Reset Request</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">You requested a password reset. Click the button below to set a new password.</p>
+      <a href="${resetUrl}" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">Reset Password →</a>
+      <hr class="divider" style="border:none; border-top:1px solid rgba(255,255,255,0.07); margin:24px 0;">
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; font-size:13px">⚠️ This link expires in <strong>1 hour</strong>. If you didn't request this, your account is safe — just ignore this email.</p>
     `)
   })
 }
@@ -116,16 +142,30 @@ async function sendEvaluationCompleteEmail(user, project, report) {
     to: user.email,
     subject: `Your project scored ${report.overallScore}/100`,
     html: baseTemplate(`
-      <div class="title">Project Evaluation Complete 🔍</div>
-      <p class="text">Your project <strong>"${project.title}"</strong> has been evaluated.</p>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Project Evaluation Complete 🔍</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">Your project <strong>"${project.title}"</strong> has been evaluated.</p>
       <div style="text-align:center; padding: 24px 0;">
-        <div class="score" style="color:${scoreColor}">${report.overallScore}/100</div>
-        <span class="badge badge-primary" style="margin-top:8px">${report.level}</span>
+        <div class="score" style="font-size:48px; font-weight:800; color:${BRAND_COLOR}; color:${scoreColor}">${report.overallScore}/100</div>
+        <span class="badge badge-primary" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(108,99,255,0.18); color:#A5A0FF; margin-top:8px">${report.level}</span>
       </div>
-      <p class="text"><strong>Summary:</strong> ${report.summary}</p>
-      ${report.strengths?.length ? `<p class="text"><strong>Key Strengths:</strong><br>${report.strengths.slice(0, 3).map(s => `• ${s}`).join('<br>')}</p>` : ''}
-      <a href="${process.env.FRONTEND_URL}/projects/${project.id}" class="btn">View Full Report →</a>
-      ${report.overallScore >= 40 ? `<br><a href="${process.env.FRONTEND_URL}/certificates" class="btn" style="background:#22C55E; margin-top:8px">Download Certificate →</a>` : ''}
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;"><strong>Summary:</strong> ${report.summary}</p>
+      ${report.strengths?.length ? `<p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;"><strong>Key Strengths:</strong><br>${report.strengths.slice(0, 3).map(s => `• ${s}`).join('<br>')}</p>` : ''}
+      <a href="${process.env.FRONTEND_URL}/projects/${project.id}" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View Full Report →</a>
+      ${report.overallScore >= 40 ? `<br><a href="${process.env.FRONTEND_URL}/certificates" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0; background:#22C55E; margin-top:8px">Download Certificate →</a>` : ''}
+    `)
+  })
+}
+
+// 4b. Project evaluation failed (credit refunded)
+async function sendEvaluationFailedEmail(user, project) {
+  await sendEmail({
+    to: user.email,
+    subject: `We couldn't evaluate "${project.title}" — credit refunded`,
+    html: baseTemplate(`
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Project Evaluation Failed</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">We ran into a problem evaluating your project <strong>"${project.title}"</strong> and couldn't finish the analysis.</p>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">The credit charged for this submission has been refunded to your account — no charge for this attempt.</p>
+      <a href="${process.env.FRONTEND_URL}/projects/${project.id}" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View Project & Re-evaluate →</a>
     `)
   })
 }
@@ -137,16 +177,16 @@ async function sendExamResultEmail(user, attempt) {
     to: user.email,
     subject: `Exam result: ${passed ? 'PASSED ✓' : 'FAILED ✗'} — ${attempt.domain}`,
     html: baseTemplate(`
-      <div class="title">Exam Result: ${attempt.domain}</div>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Exam Result: ${attempt.domain}</div>
       <div style="text-align:center; padding: 24px 0;">
-        <div class="score" style="color:${passed ? '#22C55E' : '#EF4444'}">${attempt.totalScore || 0}/100</div>
-        <span class="badge ${passed ? 'badge-success' : 'badge-error'}" style="margin-top:8px; display:inline-block">${passed ? '✓ PASSED' : '✗ FAILED'}</span>
+        <div class="score" style="font-size:48px; font-weight:800; color:${BRAND_COLOR}; color:${passed ? '#22C55E' : '#EF4444'}">${attempt.totalScore || 0}/100</div>
+        <span class="badge ${passed ? 'badge-success' : 'badge-error'}" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; margin-top:8px; ${passed ? 'background:rgba(34,197,94,0.18); color:#4ADE80;' : 'background:rgba(239,68,68,0.18); color:#F87171;'}">${passed ? '✓ PASSED' : '✗ FAILED'}</span>
       </div>
       ${passed
-        ? `<p class="text">Congratulations! You've passed the ${attempt.domain} exam. Your certificate is being generated.</p>
-           <a href="${process.env.FRONTEND_URL}/certificates" class="btn">View Certificate →</a>`
-        : `<p class="text">You scored ${attempt.totalScore || 0}/100. The passing score is 50/100. Keep studying and try again!</p>
-           <a href="${process.env.FRONTEND_URL}/exam" class="btn" style="background:#8B8B9E">Retry Exam →</a>`
+        ? `<p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">Congratulations! You've passed the ${attempt.domain} exam. Your certificate is being generated.</p>
+           <a href="${process.env.FRONTEND_URL}/certificates" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View Certificate →</a>`
+        : `<p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">You scored ${attempt.totalScore || 0}/100. The passing score is 50/100. Keep studying and try again!</p>
+           <a href="${process.env.FRONTEND_URL}/exam" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0; background:#8B8B9E">Retry Exam →</a>`
       }
     `)
   })
@@ -156,37 +196,42 @@ async function sendExamResultEmail(user, attempt) {
 async function sendCertificateReadyEmail(user, certificate) {
   await sendEmail({
     to: user.email,
-    subject: '🎓 Your DevCert certificate is ready',
+    subject: '🎓 Your Proeva certificate is ready',
     html: baseTemplate(`
-      <div class="title">Your Certificate is Ready! 🎓</div>
-      <p class="text">Congratulations! Your <strong>${certificate.level}</strong> level certificate for <strong>${certificate.domain}</strong> is ready to download and share.</p>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Your Certificate is Ready! 🎓</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">Congratulations! Your <strong>${certificate.level}</strong> level certificate for <strong>${certificate.domain}</strong> is ready to download and share.</p>
       <div style="background:rgba(108,99,255,0.1); border:1px solid rgba(108,99,255,0.3); border-radius:12px; padding:20px; margin:16px 0; text-align:center;">
         <div style="font-size:13px; color:${MUTED}">Certificate ID</div>
         <div style="font-family:monospace; font-size:14px; color:${TEXT}">${certificate.verificationId}</div>
         <div style="font-size:13px; color:${MUTED}; margin-top:8px">Score: ${certificate.score}/100 • ${certificate.level}</div>
       </div>
-      <a href="${process.env.FRONTEND_URL}/certificate/${certificate.verificationId}" class="btn">View & Download Certificate →</a>
+      <a href="${process.env.FRONTEND_URL}/certificate/${certificate.verificationId}" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View & Download Certificate →</a>
     `)
   })
 }
 
 // 7. Payment confirmed
 async function sendPaymentConfirmedEmail(user, payment) {
-  const expiry = new Date(Date.now() + (payment.plan === 'yearly' ? 365 : 30) * 24 * 60 * 60 * 1000)
+  const { PLAN_DURATIONS, PLAN_CREDITS } = require('../validators/paymentValidators')
+  const durationDays = PLAN_DURATIONS[payment.plan] || 30
+  const expiry = new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000)
+  const bundle = PLAN_CREDITS[payment.plan] || { project: 0, skill: 0 }
+  const planLabel = payment.plan.charAt(0).toUpperCase() + payment.plan.slice(1)
+
   await sendEmail({
     to: user.email,
-    subject: 'Premium activated — enjoy DevCert Pro',
+    subject: 'Premium activated — enjoy Proeva Pro',
     html: baseTemplate(`
-      <div class="title">Welcome to DevCert Premium! ⚡</div>
-      <span class="badge badge-primary">Premium ${payment.plan.charAt(0).toUpperCase() + payment.plan.slice(1)}</span>
-      <p class="text" style="margin-top:16px">Your premium subscription is now active until <strong>${expiry.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</strong>.</p>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Welcome to Proeva Premium! ⚡</div>
+      <span class="badge badge-primary" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(108,99,255,0.18); color:#A5A0FF;">Premium ${planLabel}</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px">Your credits are active until <strong>${expiry.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</strong>.</p>
       <div style="margin:16px 0">
-        <div class="feature-item"><span class="feature-icon">✓</span><span>Unlimited project evaluations with detailed AI reports</span></div>
-        <div class="feature-item"><span class="feature-icon">✓</span><span>Ad-free experience across all pages</span></div>
-        <div class="feature-item"><span class="feature-icon">✓</span><span>Priority evaluation queue — faster results</span></div>
-        <div class="feature-item"><span class="feature-icon">✓</span><span>Unlimited exam retries</span></div>
+        <div class="feature-item" style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; color:${TEXT};"><span class="feature-icon" style="color:#4ADE80; font-size:16px; margin-top:2px;">✓</span><span>${bundle.project} project evaluation credit${bundle.project === 1 ? '' : 's'} with detailed AI reports</span></div>
+        <div class="feature-item" style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; color:${TEXT};"><span class="feature-icon" style="color:#4ADE80; font-size:16px; margin-top:2px;">✓</span><span>${bundle.skill} skill exam credit${bundle.skill === 1 ? '' : 's'}</span></div>
+        <div class="feature-item" style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; color:${TEXT};"><span class="feature-icon" style="color:#4ADE80; font-size:16px; margin-top:2px;">✓</span><span>Ad-free experience across all pages</span></div>
+        <div class="feature-item" style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; color:${TEXT};"><span class="feature-icon" style="color:#4ADE80; font-size:16px; margin-top:2px;">✓</span><span>Priority evaluation queue — faster results</span></div>
       </div>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn">Go to Dashboard →</a>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">Go to Dashboard →</a>
     `)
   })
 }
@@ -203,10 +248,10 @@ async function sendApplicationReceivedEmail(user, jobPosting) {
     to: user.email,
     subject: `Application received — ${jobPosting.title} at ${jobPosting.companyName}`,
     html: baseTemplate(`
-      <div class="title">Application Received ✅</div>
-      <p class="text">Thanks for applying to <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>.
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Application Received ✅</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">Thanks for applying to <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>.
       Our screening process is automatic and AI-assisted — we'll email you as soon as there's an update.</p>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn">View Application Status →</a>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View Application Status →</a>
     `)
   })
 }
@@ -217,15 +262,15 @@ async function sendScreeningRejectionEmail(user, jobPosting, reason) {
     to: user.email,
     subject: `Update on your application — ${jobPosting.title}`,
     html: baseTemplate(`
-      <div class="title">Application Update</div>
-      <span class="badge badge-error">Not moving forward</span>
-      <p class="text" style="margin-top:16px">Thanks for your interest in <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>.
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Application Update</div>
+      <span class="badge badge-error" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(239,68,68,0.18); color:#F87171;">Not moving forward</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px">Thanks for your interest in <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>.
       After an initial automated review, we won't be moving forward with your application at this time.</p>
       <div style="background:rgba(255,255,255,0.03); border-radius:12px; padding:16px; margin:16px 0;">
-        <p class="text" style="margin:0; font-size:13px">${reason || 'Your profile did not meet the minimum requirements for this role.'}</p>
+        <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin:0; font-size:13px">${reason || 'Your profile did not meet the minimum requirements for this role.'}</p>
       </div>
-      <p class="text" style="font-size:13px">Keep your skills profile up to date — we'll automatically match you to future roles.</p>
-      <a href="${process.env.FRONTEND_URL}/profile" class="btn" style="background:#8B8B9E">Update Your Skills →</a>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; font-size:13px">Keep your skills profile up to date — we'll automatically match you to future roles.</p>
+      <a href="${process.env.FRONTEND_URL}/profile" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0; background:#8B8B9E">Update Your Skills →</a>
     `)
   })
 }
@@ -236,12 +281,12 @@ async function sendShortlistedEmail(user, jobPosting) {
     to: user.email,
     subject: `You're shortlisted! — ${jobPosting.title}`,
     html: baseTemplate(`
-      <div class="title">You've Been Shortlisted! 🎉</div>
-      <span class="badge badge-success">Moving forward</span>
-      <p class="text" style="margin-top:16px">Great news — your profile matches what <strong>${jobPosting.companyName}</strong> is looking for in their
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">You've Been Shortlisted! 🎉</div>
+      <span class="badge badge-success" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(34,197,94,0.18); color:#4ADE80;">Moving forward</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px">Great news — your profile matches what <strong>${jobPosting.companyName}</strong> is looking for in their
       <strong>${jobPosting.title}</strong> role. You're moving on to the next stage of the hiring process.</p>
-      <p class="text">We'll email you with the next step shortly — keep an eye on your inbox.</p>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn">View Application →</a>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">We'll email you with the next step shortly — keep an eye on your inbox.</p>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View Application →</a>
     `)
   })
 }
@@ -253,14 +298,14 @@ async function sendAssignmentEmail(user, jobPosting, deadline) {
     to: user.email,
     subject: `Your assignment for ${jobPosting.title} at ${jobPosting.companyName}`,
     html: baseTemplate(`
-      <div class="title">Project Assignment 📝</div>
-      <p class="text">As the next step for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>, please complete the
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Project Assignment 📝</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">As the next step for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>, please complete the
       following assignment and submit your GitHub repository:</p>
       <div style="background:rgba(255,255,255,0.03); border-radius:12px; padding:16px; margin:16px 0;">
-        <p class="text" style="margin:0; white-space:pre-wrap">${jobPosting.assignmentBrief || ''}</p>
+        <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin:0; white-space:pre-wrap">${jobPosting.assignmentBrief || ''}</p>
       </div>
-      <div class="stat-row"><span>Deadline</span><strong>${deadlineText}</strong></div>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="margin-top:16px">Submit Your Assignment →</a>
+      <div class="stat-row" style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:14px; color:${TEXT};"><span>Deadline</span><strong>${deadlineText}</strong></div>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0; margin-top:16px">Submit Your Assignment →</a>
     `)
   })
 }
@@ -271,11 +316,11 @@ async function sendAssignmentReminderEmail(user, jobPosting, hoursLeft) {
     to: user.email,
     subject: `⏰ Reminder: assignment due soon — ${jobPosting.title}`,
     html: baseTemplate(`
-      <div class="title">Assignment Reminder ⏰</div>
-      <span class="badge badge-warning">${hoursLeft}h remaining</span>
-      <p class="text" style="margin-top:16px">Your assignment for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong> is due in approximately
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Assignment Reminder ⏰</div>
+      <span class="badge badge-warning" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(245,158,11,0.18); color:#FBBF24;">${hoursLeft}h remaining</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px">Your assignment for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong> is due in approximately
       <strong>${hoursLeft} hour${hoursLeft === 1 ? '' : 's'}</strong>. Submit your GitHub repository before the deadline to stay in the running.</p>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn">Submit Now →</a>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">Submit Now →</a>
     `)
   })
 }
@@ -287,13 +332,13 @@ async function sendExamUnlockedEmail(user, jobPosting, examLink, deadline) {
     to: user.email,
     subject: `Assessment unlocked — ${jobPosting.title}`,
     html: baseTemplate(`
-      <div class="title">Skills Assessment Unlocked 🔓</div>
-      <p class="text">As the next step for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>, please complete a
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Skills Assessment Unlocked 🔓</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">As the next step for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>, please complete a
       <strong>${jobPosting.examDurationMin}-minute</strong> proctored skills assessment, including a few questions about your submitted project.</p>
-      <div class="stat-row"><span>Start before</span><strong>${deadlineText}</strong></div>
-      <a href="${examLink}" class="btn" style="margin-top:16px">Start Assessment →</a>
-      <hr class="divider">
-      <p class="text" style="font-size:13px">⚠️ Once started, you'll have ${jobPosting.examDurationMin} minutes to complete the assessment. Make sure your camera and a stable connection are ready.</p>
+      <div class="stat-row" style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:14px; color:${TEXT};"><span>Start before</span><strong>${deadlineText}</strong></div>
+      <a href="${examLink}" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0; margin-top:16px">Start Assessment →</a>
+      <hr class="divider" style="border:none; border-top:1px solid rgba(255,255,255,0.07); margin:24px 0;">
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; font-size:13px">⚠️ Once started, you'll have ${jobPosting.examDurationMin} minutes to complete the assessment. Make sure your camera and a stable connection are ready.</p>
     `)
   })
 }
@@ -304,11 +349,11 @@ async function sendExamReminderEmail(user, jobPosting, hoursLeft) {
     to: user.email,
     subject: `⏰ Reminder: assessment window closing — ${jobPosting.title}`,
     html: baseTemplate(`
-      <div class="title">Assessment Reminder ⏰</div>
-      <span class="badge badge-warning">${hoursLeft}h remaining</span>
-      <p class="text" style="margin-top:16px">Your skills assessment window for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong> closes in approximately
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Assessment Reminder ⏰</div>
+      <span class="badge badge-warning" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(245,158,11,0.18); color:#FBBF24;">${hoursLeft}h remaining</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px">Your skills assessment window for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong> closes in approximately
       <strong>${hoursLeft} hour${hoursLeft === 1 ? '' : 's'}</strong>. Start it now to stay in the running.</p>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn">Start Assessment →</a>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">Start Assessment →</a>
     `)
   })
 }
@@ -319,11 +364,11 @@ async function sendSelectionEmail(user, jobPosting, rank, narrative) {
     to: user.email,
     subject: `🎉 You've been selected — ${jobPosting.title} at ${jobPosting.companyName}`,
     html: baseTemplate(`
-      <div class="title">Congratulations — You're Selected! 🎉</div>
-      <span class="badge badge-success">Selected${rank ? ` • Rank #${rank}` : ''}</span>
-      <p class="text" style="margin-top:16px">${narrative || `Your application for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong> stood out across the hiring pipeline — congratulations!`}</p>
-      <p class="text">The recruiting team at ${jobPosting.companyName} will be in touch with next steps shortly.</p>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn">View Full Report →</a>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Congratulations — You're Selected! 🎉</div>
+      <span class="badge badge-success" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(34,197,94,0.18); color:#4ADE80;">Selected${rank ? ` • Rank #${rank}` : ''}</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px">${narrative || `Your application for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong> stood out across the hiring pipeline — congratulations!`}</p>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">The recruiting team at ${jobPosting.companyName} will be in touch with next steps shortly.</p>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View Full Report →</a>
     `)
   })
 }
@@ -334,15 +379,15 @@ async function sendRejectionEmail(user, jobPosting, reasonReport) {
     to: user.email,
     subject: `Update on your application — ${jobPosting.title}`,
     html: baseTemplate(`
-      <div class="title">Application Update</div>
-      <span class="badge badge-error">Not selected</span>
-      <p class="text" style="margin-top:16px">Thank you for completing the full hiring process for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>.
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Application Update</div>
+      <span class="badge badge-error" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(239,68,68,0.18); color:#F87171;">Not selected</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px">Thank you for completing the full hiring process for <strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong>.
       After careful review, we've decided to move forward with other candidates for this round.</p>
       <div style="background:rgba(255,255,255,0.03); border-radius:12px; padding:16px; margin:16px 0;">
-        <p class="text" style="margin:0; font-size:13px">${reasonReport || 'Your scores were below the cutoff for this round.'}</p>
+        <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin:0; font-size:13px">${reasonReport || 'Your scores were below the cutoff for this round.'}</p>
       </div>
-      <p class="text">We appreciate the time and effort you put into this process and encourage you to apply again in the future.</p>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="background:#8B8B9E">View Full Report →</a>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">We appreciate the time and effort you put into this process and encourage you to apply again in the future.</p>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0; background:#8B8B9E">View Full Report →</a>
     `)
   })
 }
@@ -353,13 +398,13 @@ async function sendJobMatchEmail(user, jobPosting, matchPct) {
     to: user.email,
     subject: `New job match: ${jobPosting.title} at ${jobPosting.companyName}`,
     html: baseTemplate(`
-      <div class="title">A New Role Matches Your Skills 🎯</div>
-      <span class="badge badge-primary">${matchPct}% skill match</span>
-      <p class="text" style="margin-top:16px"><strong>${jobPosting.companyName}</strong> is hiring for <strong>${jobPosting.title}</strong>, and your profile
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">A New Role Matches Your Skills 🎯</div>
+      <span class="badge badge-primary" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(108,99,255,0.18); color:#A5A0FF;">${matchPct}% skill match</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px"><strong>${jobPosting.companyName}</strong> is hiring for <strong>${jobPosting.title}</strong>, and your profile
       matches ${matchPct}% of the required skills.</p>
-      <a href="${process.env.FRONTEND_URL}/apply/${jobPosting.applyLinkSlug}" class="btn">View & Apply →</a>
-      <hr class="divider">
-      <p class="text" style="font-size:13px">Getting these emails too often? <a href="${process.env.FRONTEND_URL}/settings" style="color:${MUTED}">Update your notification preferences</a>.</p>
+      <a href="${process.env.FRONTEND_URL}/apply/${jobPosting.applyLinkSlug}" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View & Apply →</a>
+      <hr class="divider" style="border:none; border-top:1px solid rgba(255,255,255,0.07); margin:24px 0;">
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; font-size:13px">Getting these emails too often? <a href="${process.env.FRONTEND_URL}/settings" style="color:${MUTED}">Update your notification preferences</a>.</p>
     `)
   })
 }
@@ -370,17 +415,17 @@ async function sendRecruiterDigestEmail(recruiter, jobPosting, stats) {
     to: recruiter.email,
     subject: `Pipeline update: ${jobPosting.title} — ${stats.newApplicants} new applicants`,
     html: baseTemplate(`
-      <div class="title">Hiring Pipeline Update 📊</div>
-      <p class="text"><strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong></p>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Hiring Pipeline Update 📊</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;"><strong>${jobPosting.title}</strong> at <strong>${jobPosting.companyName}</strong></p>
       <div style="margin:16px 0">
-        <div class="stat-row"><span>New applicants</span><strong>${stats.newApplicants}</strong></div>
-        <div class="stat-row"><span>Shortlisted</span><strong>${stats.shortlisted}</strong></div>
-        <div class="stat-row"><span>Pending review</span><strong>${stats.pendingReview}</strong></div>
-        <div class="stat-row"><span>Selected</span><strong>${stats.selected ?? 0}</strong></div>
-        <div class="stat-row"><span>Rejected</span><strong>${stats.rejected ?? 0}</strong></div>
+        <div class="stat-row" style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:14px; color:${TEXT};"><span>New applicants</span><strong>${stats.newApplicants}</strong></div>
+        <div class="stat-row" style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:14px; color:${TEXT};"><span>Shortlisted</span><strong>${stats.shortlisted}</strong></div>
+        <div class="stat-row" style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:14px; color:${TEXT};"><span>Pending review</span><strong>${stats.pendingReview}</strong></div>
+        <div class="stat-row" style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:14px; color:${TEXT};"><span>Selected</span><strong>${stats.selected ?? 0}</strong></div>
+        <div class="stat-row" style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:14px; color:${TEXT};"><span>Rejected</span><strong>${stats.rejected ?? 0}</strong></div>
       </div>
-      ${stats.rejectedSummary ? `<p class="text"><strong>Rejected pool insights:</strong> ${stats.rejectedSummary}</p>` : ''}
-      <a href="${process.env.FRONTEND_URL}/recruiter/postings/${jobPosting.id}" class="btn">View Pipeline →</a>
+      ${stats.rejectedSummary ? `<p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;"><strong>Rejected pool insights:</strong> ${stats.rejectedSummary}</p>` : ''}
+      <a href="${process.env.FRONTEND_URL}/recruiter/postings/${jobPosting.id}" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View Pipeline →</a>
     `)
   })
 }
@@ -389,13 +434,13 @@ async function sendRecruiterDigestEmail(recruiter, jobPosting, stats) {
 async function sendCompanyVerifiedEmail(recruiter, company) {
   await sendEmail({
     to: recruiter.email,
-    subject: `${company.name} is now verified on DevCert ✅`,
+    subject: `${company.name} is now verified on Proeva ✅`,
     html: baseTemplate(`
-      <div class="title">Company Verified ✅</div>
-      <span class="badge badge-success">Verified</span>
-      <p class="text" style="margin-top:16px">Great news — <strong>${company.name}</strong> has been reviewed and verified by the DevCert team.
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Company Verified ✅</div>
+      <span class="badge badge-success" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(34,197,94,0.18); color:#4ADE80;">Verified</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px">Great news — <strong>${company.name}</strong> has been reviewed and verified by the Proeva team.
       You can now publish job postings and start receiving AI-screened candidates.</p>
-      <a href="${process.env.FRONTEND_URL}/recruiter/postings/new" class="btn">Post a Job →</a>
+      <a href="${process.env.FRONTEND_URL}/recruiter/postings/new" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">Post a Job →</a>
     `)
   })
 }
@@ -406,15 +451,15 @@ async function sendCompanyRejectedEmail(recruiter, company) {
     to: recruiter.email,
     subject: `Verification update for ${company.name}`,
     html: baseTemplate(`
-      <div class="title">Verification Update</div>
-      <span class="badge badge-error">Not verified</span>
-      <p class="text" style="margin-top:16px">We reviewed your submission for <strong>${company.name}</strong> and were unable to verify it at this time.</p>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Verification Update</div>
+      <span class="badge badge-error" style="display:inline-block; padding:4px 14px; border-radius:20px; font-size:13px; font-weight:600; background:rgba(239,68,68,0.18); color:#F87171;">Not verified</span>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin-top:16px">We reviewed your submission for <strong>${company.name}</strong> and were unable to verify it at this time.</p>
       ${company.verificationNote ? `
       <div style="background:rgba(255,255,255,0.03); border-radius:12px; padding:16px; margin:16px 0;">
-        <p class="text" style="margin:0; font-size:13px"><strong>Reason:</strong> ${company.verificationNote}</p>
+        <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin:0; font-size:13px"><strong>Reason:</strong> ${company.verificationNote}</p>
       </div>` : ''}
-      <p class="text">You can update your company details and resubmit for verification from your Settings.</p>
-      <a href="${process.env.FRONTEND_URL}/recruiter/company/verify" class="btn" style="background:#8B8B9E">Resubmit for Verification →</a>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">You can update your company details and resubmit for verification from your Settings.</p>
+      <a href="${process.env.FRONTEND_URL}/recruiter/company/verify" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0; background:#8B8B9E">Resubmit for Verification →</a>
     `)
   })
 }
@@ -425,12 +470,12 @@ async function sendRecruiterMessageEmail(user, company, messageBody, application
     to: user.email,
     subject: `Message from ${company.name} about your application`,
     html: baseTemplate(`
-      <div class="title">Message from ${company.name} 💬</div>
-      <p class="text">You have a new message regarding your application:</p>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">Message from ${company.name} 💬</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">You have a new message regarding your application:</p>
       <div style="background:rgba(255,255,255,0.03); border-radius:12px; padding:16px; margin:16px 0; border-left:3px solid ${BRAND_COLOR}">
-        <p class="text" style="margin:0; white-space:pre-wrap">${messageBody}</p>
+        <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; margin:0; white-space:pre-wrap">${messageBody}</p>
       </div>
-      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn">View Application →</a>
+      <a href="${process.env.FRONTEND_URL}/dashboard" class="btn" style="display:inline-block; background:${BRAND_COLOR}; color:#ffffff; text-decoration:none; padding:14px 28px; border-radius:12px; font-weight:600; font-size:15px; margin:8px 0;">View Application →</a>
     `)
   })
 }
@@ -438,8 +483,8 @@ async function sendRecruiterMessageEmail(user, company, messageBody, application
 async function sendRecruiterOtpEmail(user, otp, purpose) {
   const isLogin = purpose === 'login'
   const subject = isLogin
-    ? 'Your DevCert recruiter login code'
-    : 'Verify your recruiter account — DevCert'
+    ? 'Your Proeva recruiter login code'
+    : 'Verify your recruiter account — Proeva'
 
   const title = isLogin
     ? `Your one-time login code, ${user.name.split(' ')[0]}`
@@ -451,14 +496,14 @@ async function sendRecruiterOtpEmail(user, otp, purpose) {
 
   const footerNote = isLogin
     ? "If you didn't attempt to log in, you can safely ignore this email and your account remains secure."
-    : "If you didn't sign up for DevCert, you can safely ignore this email."
+    : "If you didn't sign up for Proeva, you can safely ignore this email."
 
   await sendEmail({
     to: user.email,
     subject,
     html: baseTemplate(`
-      <div class="title">${title}</div>
-      <p class="text">${bodyText}</p>
+      <div class="title" style="font-size:24px; font-weight:700; margin-bottom:12px; color:${TEXT};">${title}</div>
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px;">${bodyText}</p>
 
       <!-- OTP Box -->
       <div style="
@@ -484,12 +529,12 @@ async function sendRecruiterOtpEmail(user, otp, purpose) {
         </p>
       </div>
 
-      <hr class="divider">
-      <p class="text" style="font-size:13px;">${footerNote}</p>
+      <hr class="divider" style="border:none; border-top:1px solid rgba(255,255,255,0.07); margin:24px 0;">
+      <p class="text" style="color:${MUTED}; line-height:1.6; margin-bottom:16px; font-size:13px;">${footerNote}</p>
 
       <div style="margin-top:16px; padding:12px 16px; background:rgba(255,255,255,0.03); border-radius:10px; border-left:3px solid #6C63FF;">
         <p style="font-size:12px; color:#8B8B9E; margin:0;">
-          🔒 DevCert will never ask for your OTP via phone or chat. This code is for the DevCert website only.
+          🔒 Proeva will never ask for your OTP via phone or chat. This code is for the Proeva website only.
         </p>
       </div>
     `)
@@ -502,6 +547,7 @@ module.exports = {
   sendWelcomeEmail,
   sendPasswordResetEmail,
   sendEvaluationCompleteEmail,
+  sendEvaluationFailedEmail,
   sendExamResultEmail,
   sendCertificateReadyEmail,
   sendPaymentConfirmedEmail,

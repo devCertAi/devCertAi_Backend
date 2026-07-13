@@ -17,6 +17,15 @@ queues.emailQueue.process(async (job) => {
       break
     }
 
+    case 'evaluation_failed': {
+      const user = await prisma.user.findUnique({ where: { id: userId } })
+      if (!user) return
+      const project = await prisma.project.findUnique({ where: { id: projectId } })
+      if (!project) return
+      await emailService.sendEvaluationFailedEmail(user, project)
+      break
+    }
+
     case 'exam_result': {
       const user = await prisma.user.findUnique({ where: { id: userId } })
       if (!user) return

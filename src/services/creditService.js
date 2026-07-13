@@ -5,10 +5,16 @@
  * - Free monthly allowance: 3 project evals + 1 skill exam / month
  * - Purchased credits stack on top (never overwrite), valid 6 months
  * - Signup bonus: 1 skill exam + 1 project eval (new users)
- * - Recruiter free credits: 50 project + 20 skill (on recruiter plan purchase)
+ * - Paid plans (starter ₹9 / growth ₹29 / pro ₹59 / recruiter ₹999) each
+ *   grant a fixed credit bundle sized to cover their AI token cost — see
+ *   PLAN_CREDITS in validators/paymentValidators.js. NO plan is unlimited;
+ *   every project eval and exam attempt always draws from a real balance.
  * - If credits are re-bought, new ones stack on existing balance, expiry extends
  * - Exam 1 (Phase 1) costs 1 skill credit; Exam 2 (Phase 2) costs 1 skill credit
- * - Project evaluation costs 1 project credit
+ * - Project evaluation costs 1–3 project credits, based on detected project
+ *   size (Small/Medium/Large — see utils/projectSizeEstimator.js). Size is
+ *   estimated from AI token spend and re-derived server-side at submit time,
+ *   never trusted from the client.
  * - Certificate is FREE (no credit consumed)
  *
  * CREDIT EXPIRY:
@@ -134,21 +140,15 @@ const toBalance = (record) => ({
 
 /**
  * Get a user's current credit balance.
- * Premium users get unlimited = true flag (no actual credit deduction).
+ *
+ * No plan is unlimited anymore — premium status (from a paid plan) only
+ * affects which cosmetic perks are unlocked elsewhere; it does not change
+ * the credit numbers returned here. The `isPremium` param is accepted for
+ * backward-compatible call sites but no longer alters the result.
  */
 const getBalance = async (userId, { isPremium = false } = {}) => {
   const record = await getOrCreateCredits(userId)
   const balance = toBalance(record)
-
-  if (isPremium) {
-    return {
-      ...balance,
-      unlimited: true,
-      skill: { ...balance.skill, remaining: Infinity },
-      project: { ...balance.project, remaining: Infinity }
-    }
-  }
-
   return { ...balance, unlimited: false }
 }
 
@@ -178,13 +178,17 @@ const CREDIT_COST = {
 }
 
 /**
- * Consume 1 credit from the given bucket.
- * Throws 402 with CREDITS_EXHAUSTED code if none remain.
- * Free monthly credits are consumed first; bonus credits are used as overflow.
+ * Consume `amount` credits from the given bucket (defaults to 1).
+ * Throws 402 with CREDITS_EXHAUSTED code if not enough remain.
+ * Free monthly credits are consumed first; bonus credits are used as
+ * overflow, and can cover the remainder of a multi-credit charge (e.g. a
+ * "Large" project evaluation costing 3 credits with only 1 free credit
+ * left draws the other 2 from bonus).
  */
-const consumeCredit = async (userId, bucket, meta = {}) => {
+const consumeCredit = async (userId, bucket, meta = {}, amount = 1) => {
   const fields = BUCKET_FIELDS[bucket]
   if (!fields) throw new Error(`Unknown credit bucket: ${bucket}`)
+  if (!Number.isInteger(amount) || amount < 1) throw new Error(`Invalid credit amount: ${amount}`)
 
   const record = await getOrCreateCredits(userId)
 
@@ -193,11 +197,13 @@ const consumeCredit = async (userId, bucket, meta = {}) => {
   const bonus = record[fields.bonus]
   const freeRemaining = Math.max(0, limit - used)
 
-  if (freeRemaining <= 0 && bonus <= 0) {
+  if (freeRemaining + bonus < amount) {
     const balance = toBalance(record)
-    throw new ApiError(402, `Not enough ${bucket === 'project' ? 'project evaluation' : 'exam'} credits`, [{
+    throw new ApiError(402, `Not enough ${bucket === 'project' ? 'project evaluation' : 'exam'} credits (need ${amount}, have ${freeRemaining + bonus})`, [{
       code: 'CREDITS_EXHAUSTED',
       bucket,
+      creditsNeeded: amount,
+      creditsAvailable: freeRemaining + bonus,
       balance,
       locked: true,
       upgradeUrl: '/pricing',
@@ -206,10 +212,12 @@ const consumeCredit = async (userId, bucket, meta = {}) => {
     }])
   }
 
-  const useFree = freeRemaining > 0
-  const data = useFree
-    ? { [fields.used]: used + 1 }
-    : { [fields.bonus]: bonus - 1 }
+  const useFree = Math.min(amount, freeRemaining)
+  const useBonus = amount - useFree
+  const data = {
+    ...(useFree > 0 ? { [fields.used]: used + useFree } : {}),
+    ...(useBonus > 0 ? { [fields.bonus]: bonus - useBonus } : {}),
+  }
 
   const updated = await prisma.userCredits.update({ where: { userId }, data })
 
@@ -218,28 +226,83 @@ const consumeCredit = async (userId, bucket, meta = {}) => {
       userId,
       kind: KIND_BY_BUCKET[bucket],
       bucket,
-      amount: -1,
-      source: useFree ? 'free' : 'bonus',
+      amount: -amount,
+      source: useBonus > 0 && useFree > 0 ? 'free+bonus' : useBonus > 0 ? 'bonus' : 'free',
       [fields.balanceKey]: toBalance(updated)[bucket].remaining,
       meta
     }
   })
 
-  return toBalance(updated)
+  // `_debit` is returned (not persisted anywhere but the transaction row
+  // above) so a caller that might need to refund this exact charge later —
+  // e.g. a project evaluation that fails after the credit was already
+  // consumed at submission time — can restore credits to the same pools
+  // (free vs bonus) they were drawn from. See refundCredit() below.
+  return { ...toBalance(updated), _debit: { amount, useFree, useBonus } }
 }
 
 /**
  * Check credit availability without consuming. Returns { canProceed, balance }.
+ * @param {string} userId
+ * @param {'project'|'skill'} bucket
+ * @param {number} amount — how many credits the action would need (default 1)
  */
-const checkCredit = async (userId, bucket) => {
+const checkCredit = async (userId, bucket, amount = 1) => {
   const record = await getOrCreateCredits(userId)
   const fields = BUCKET_FIELDS[bucket]
   const used = record[fields.used]
   const limit = record[fields.limit]
   const bonus = record[fields.bonus]
   const freeRemaining = Math.max(0, limit - used)
-  const canProceed = freeRemaining > 0 || bonus > 0
+  const canProceed = (freeRemaining + bonus) >= amount
   return { canProceed, balance: toBalance(record) }
+}
+
+/**
+ * Refund credits previously consumed for an action that ultimately failed
+ * through no fault of the user — e.g. a project submission that was
+ * charged a credit up front, but the AI evaluation pipeline errored out
+ * before producing a result. Restores credits to the exact pools (free vs
+ * bonus) the original charge drew from, using the `_debit` snapshot
+ * `consumeCredit` returned at charge time, so a refund can't quietly
+ * convert a free-tier debit into a permanent bonus credit.
+ *
+ * Safe to call even if `debit` is missing/invalid — it's a no-op in that
+ * case rather than throwing, since a refund should never be the thing that
+ * crashes a worker's failure-handling path.
+ *
+ * @param {string} userId
+ * @param {'project'|'skill'} bucket
+ * @param {object} meta - recorded on the refund's CreditTransaction for audit
+ * @param {{amount:number, useFree:number, useBonus:number}} debit - snapshot from consumeCredit's return value (`._debit`)
+ */
+const refundCredit = async (userId, bucket, meta = {}, debit) => {
+  const fields = BUCKET_FIELDS[bucket]
+  if (!fields) throw new Error(`Unknown credit bucket: ${bucket}`)
+  if (!debit || !Number.isInteger(debit.amount) || debit.amount < 1) return null
+
+  const { amount, useFree = 0, useBonus = amount } = debit
+
+  const record = await getOrCreateCredits(userId)
+  const data = {
+    ...(useFree > 0 ? { [fields.used]: Math.max(0, record[fields.used] - useFree) } : {}),
+    ...(useBonus > 0 ? { [fields.bonus]: record[fields.bonus] + useBonus } : {}),
+  }
+  const updated = await prisma.userCredits.update({ where: { userId }, data })
+
+  await prisma.creditTransaction.create({
+    data: {
+      userId,
+      kind: 'refund',
+      bucket,
+      amount, // positive — credits restored
+      source: useBonus > 0 && useFree > 0 ? 'free+bonus' : useBonus > 0 ? 'bonus' : 'free',
+      [fields.balanceKey]: toBalance(updated)[bucket].remaining,
+      meta
+    }
+  })
+
+  return toBalance(updated)
 }
 
 /**
@@ -435,6 +498,7 @@ module.exports = {
   getBalance,
   consumeCredit,
   checkCredit,
+  refundCredit,
   grantBonusCredits,
   grantSignupBonus,
   grantRecruiterBonus,

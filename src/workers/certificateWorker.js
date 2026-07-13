@@ -113,6 +113,34 @@ queues.certificateGenQueue.process(async (job) => {
     userName: user.name
   })
 
+  // Real-time notify (project certs only): certificate generation runs as
+  // a SEPARATE queued job from the evaluation itself (see
+  // projectWorker.js), so by the time this job runs, project.status is
+  // already 'completed' — the frontend's project:updated listener already
+  // fired once (without a certificate) and its polling loop already
+  // stopped, since it only polls while status is non-terminal. Without a
+  // second emit here, ProjectDetail's certificate tab never learns the
+  // cert exists until the user navigates away and back (which forces a
+  // fresh fetch). Emitting project:updated again — now that the cert row
+  // exists — makes the already-registered listener refetch and pick it up
+  // immediately, matching the "no manual refresh" behaviour the first emit
+  // already gives the score/status update.
+  if (type === 'project_eval' && projectId) {
+    try {
+      const { getIO } = require('../socket')
+      const io = getIO()
+      if (io) {
+        io.to(`user:${userId}`).emit('project:updated', {
+          projectId,
+          status: 'completed',
+          score,
+          level,
+          certificateReady: true
+        })
+      }
+    } catch (_) {}
+  }
+
   const message = type === 'combo_cert'
     ? `You passed both Phase 1 & Phase 2 in ${domain} — your combined ${level} certificate is ready`
     : `Your ${level} ${domain} certificate is ready to download`

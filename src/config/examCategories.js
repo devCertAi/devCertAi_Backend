@@ -19,8 +19,13 @@
 const EXAM_CATEGORIES = {
   Frontend: ['HTML & CSS', 'React', 'Angular', 'General Frontend'],
   Backend: ['Node.js', 'Next.js', 'Java Spring Boot', 'Go', 'General Backend', 'Security'],
-  'Full Stack': ['HTML & CSS', 'React', 'Angular', 'Node.js', 'Next.js', 'Java Spring Boot', 'Go', 'General Backend', 'Security'],
-  Mobile: ['Android', 'iOS', 'React Native', 'Flutter', 'General Mobile'],
+  // "General Full Stack" added so Full Stack matches every other domain in
+  // always offering a broad, stack-agnostic option alongside the specific
+  // technology categories.
+  'Full Stack': ['HTML & CSS', 'React', 'Angular', 'Node.js', 'Next.js', 'Java Spring Boot', 'Go', 'General Backend', 'Security', 'General Full Stack'],
+  // Kotlin added alongside Flutter — Android's primary modern language,
+  // distinct from the cross-platform Flutter/React Native categories.
+  Mobile: ['Android', 'iOS', 'React Native', 'Flutter', 'Kotlin', 'General Mobile'],
   'Data Science': ['Python & Pandas', 'Machine Learning', 'Deep Learning', 'Statistics', 'General Data Science'],
   DevOps: ['CI/CD', 'Docker & Kubernetes', 'Cloud (AWS/Azure/GCP)', 'Monitoring & Security', 'General DevOps'],
   'Programming Languages': ['Java', 'C/C++', 'Python', 'JavaScript', 'General Programming'],
@@ -124,6 +129,63 @@ function isValidCategoryForDomain(domain, category) {
   return (EXAM_CATEGORIES[domain] || []).includes(category)
 }
 
+// ── Domain / category normalization ────────────────────────────────────────
+// ROOT CAUSE FIX for "Phase 1 shows no questions available for Frontend /
+// Mobile / Programming Languages even though questions exist":
+//
+// adminController.addQuestion / bulkImportQuestions previously wrote
+// `domain`/`category` straight from req.body with NO validation against the
+// canonical EXAM_CATEGORIES list. Any admin typo or casing slip when adding
+// questions (e.g. "frontend", "Frontend ", "Mobile Dev", "programming
+// languages") got stored verbatim in QuestionBank + QuestionBankStats.
+//
+// examService.getPhase1Questions queries QuestionBank with
+// `mode: 'insensitive'`, so starting an exam still worked once a category was
+// already selected. But questionStatsService.getCategoryCountsForDomains
+// (which drives the category picker candidates see BEFORE starting) queried
+// QuestionBankStats with an EXACT, case-sensitive `domain: { in: DOMAINS }`
+// match against the canonical capitalized names — so any bucket stored under
+// a slightly different casing/spelling never showed up, the category list
+// came back empty, and the UI rendered "No sections have questions available
+// for {domain} yet" even though the questions were sitting right there in
+// the DB under a mismatched key.
+//
+// normalizeDomain / normalizeCategory below are the single source of truth
+// used at WRITE time (adminController) so this class of bug can't recur, and
+// getCategoryCountsForDomains + recomputeAll (questionStatsService) also use
+// them defensively to fold any already-mis-cased legacy rows back onto the
+// correct canonical bucket.
+
+/**
+ * Case/whitespace-insensitive lookup of a domain against the canonical list.
+ * Returns the canonical spelling, or null if it doesn't match any known domain.
+ */
+function normalizeDomain(domain) {
+  if (!domain || typeof domain !== 'string') return null
+  const trimmed = domain.trim()
+  const exact = DOMAINS.find((d) => d === trimmed)
+  if (exact) return exact
+  const lower = trimmed.toLowerCase()
+  const match = DOMAINS.find((d) => d.toLowerCase() === lower)
+  return match || null
+}
+
+/**
+ * Case/whitespace-insensitive lookup of a category within an already-
+ * normalized domain. Returns the canonical spelling, or null if it doesn't
+ * belong to that domain.
+ */
+function normalizeCategory(domain, category) {
+  if (!category || typeof category !== 'string') return null
+  const trimmed = category.trim()
+  const list = EXAM_CATEGORIES[domain] || []
+  const exact = list.find((c) => c === trimmed)
+  if (exact) return exact
+  const lower = trimmed.toLowerCase()
+  const match = list.find((c) => c.toLowerCase() === lower)
+  return match || null
+}
+
 // Maps a difficulty preset (easy/medium/hard) to the primary QuestionBank
 // `level` (Beginner/Intermediate/Expert) used to seed the question query.
 // Used by examService.getPhase1Questions.
@@ -143,6 +205,8 @@ module.exports = {
   BASE_BUFFER_SEC,
   computeTimeLimit,
   isValidCategoryForDomain,
+  normalizeDomain,
+  normalizeCategory,
   levelForDifficulty,
   // Phase 2 (project-based) config — was defined above but never exported,
   // so the controller/validators/frontend had no way to reach it and Phase 2

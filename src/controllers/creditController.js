@@ -37,15 +37,6 @@ const checkCredits = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'bucket must be skill or project')
   }
 
-  if (req.user.isPremium) {
-    return res.json(new ApiResponse(200, {
-      canProceed: true,
-      unlimited: true,
-      creditsNeeded: count,
-      creditsAvailable: Infinity
-    }))
-  }
-
   const { canProceed, balance } = await creditService.checkCredit(req.user.id, bucket)
   const creditsAvailable = balance[bucket].remaining
 
@@ -63,11 +54,8 @@ const checkCredits = asyncHandler(async (req, res) => {
 const watchAdReward = asyncHandler(async (req, res) => {
   const { bucket = 'project' } = req.body
 
-  // Premium users have unlimited credits already — no need to farm ads.
-  if (req.user.isPremium) {
-    throw new ApiError(400, 'Premium accounts already have unlimited credits')
-  }
-
+  // No plan is unlimited anymore, so ad rewards are available to everyone,
+  // premium included — extra credits are still useful once a balance runs out.
   const result = await creditService.grantAdRewardCredit(req.user.id, bucket)
   return res.json(new ApiResponse(200, result, `+${1} ${bucket} credit added!`))
 })

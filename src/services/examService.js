@@ -56,31 +56,40 @@ async function getPhase1Questions(domain, count = 25, category = null, difficult
 
   let questions = await prisma.questionBank.findMany({ where: exactWhere, select: selectFields })
 
-  // Fallback 1: not enough at the exact category+level — relax the level
-  // (keep the category, since that's the more important choice to honor)
-  // and top up with questions from other difficulty levels in that category.
-  if (questions.length < count && category) {
-    const byCategory = await prisma.questionBank.findMany({
-      where: { ...baseWhere, category },
-      select: selectFields,
-    })
-    questions = mergeUnique(questions, byCategory)
-  }
+  if (level) {
+    // A specific difficulty (easy/medium/hard) was requested — the candidate
+    // was shown a slider capped to exactly how many questions exist at THIS
+    // level for this category, so this should already be enough. If it isn't
+    // (e.g. stats drift), the only acceptable widening is to drop the
+    // CATEGORY filter and pull more questions at the SAME level from
+    // elsewhere in the domain. We must never cross into a different level —
+    // that would silently turn an "Easy" exam into one containing
+    // Medium/Hard questions, which is exactly the bug this fixes.
+    if (questions.length < count && category) {
+      const sameLevelWholeDomain = await prisma.questionBank.findMany({
+        where: { ...baseWhere, level },
+        select: selectFields,
+      })
+      questions = mergeUnique(questions, sameLevelWholeDomain)
+    }
+  } else {
+    // No specific difficulty requested — free to widen across categories/
+    // levels within the domain.
+    if (questions.length < count && category) {
+      const byCategory = await prisma.questionBank.findMany({
+        where: { ...baseWhere, category },
+        select: selectFields,
+      })
+      questions = mergeUnique(questions, byCategory)
+    }
 
-  // Fallback 2: still short — drop the category filter too and pull from
-  // the whole domain (still respecting level if one was requested).
-  if (questions.length < count) {
-    const byDomain = await prisma.questionBank.findMany({
-      where: { ...baseWhere, ...(level ? { level } : {}) },
-      select: selectFields,
-    })
-    questions = mergeUnique(questions, byDomain)
-  }
-
-  // Fallback 3: absolute last resort — anything active in this domain.
-  if (questions.length < count) {
-    const anyInDomain = await prisma.questionBank.findMany({ where: baseWhere, select: selectFields })
-    questions = mergeUnique(questions, anyInDomain)
+    if (questions.length < count) {
+      const byDomain = await prisma.questionBank.findMany({
+        where: baseWhere,
+        select: selectFields,
+      })
+      questions = mergeUnique(questions, byDomain)
+    }
   }
 
   if (questions.length < count) {

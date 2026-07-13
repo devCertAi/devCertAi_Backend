@@ -71,9 +71,15 @@ const downloadCertificate = asyncHandler(async (req, res) => {
     metadata: cert.metadata
   })
 
+  // Guard against ever sending a non-Buffer (e.g. a Uint8Array) — Express
+  // would silently JSON-serialize it instead of sending raw binary,
+  // producing a corrupted PDF the browser can't open.
+  const safeBuffer = Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer)
+
   res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Length', safeBuffer.length)
   res.setHeader('Content-Disposition', `attachment; filename="devcert-${cert.verificationId}.pdf"`)
-  res.send(pdfBuffer)
+  res.send(safeBuffer)
 })
 // PUT /:id/visibility
 const toggleVisibility = asyncHandler(async (req, res) => {

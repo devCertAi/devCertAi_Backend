@@ -8,8 +8,9 @@ const asyncHandler = require('../utils/asyncHandler')
 const queues = require('../queues')
 const { defaultOpts } = queues
 const { getPhase1Questions } = require('../services/examService')
+const { getCategoryCountsForDomains } = require('../services/questionStatsService')
 const { generatePhase2Questions } = require('../ai/evaluationEngine')
-const { analyzeGithubRepo, classifyRepoDomain, domainsAreCompatible } = require('../ai/githubAnalyzer')
+const { analyzeGithubRepo, classifyRepoDomain, domainsAreCompatible, aiAnalyzeDomainMatch } = require('../ai/githubAnalyzer')
 const { analyzeZip } = require('../ai/zipAnalyzer')
 const creditService = require('../services/creditService')
 const multer = require('multer')
@@ -40,9 +41,17 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 // Combo (Phase 1 + Phase 2 in one flow) needs to validate the candidate's
 // GitHub repo BEFORE Phase 1 even starts — otherwise they could pass Phase 1,
 // burn a Phase 2 credit, and only then discover the repo doesn't match the
-// domain. This reuses the same analyzeGithubRepo/classifyRepoDomain/
-// domainsAreCompatible pipeline the standalone Phase 2 submission uses, but
-// doesn't create or touch any exam attempt — it's a pure pre-check.
+// domain.
+//
+// This is the single strictest domain gate in the product: a combo run
+// commits the candidate to BOTH phases up front, so a wrong "match" here is
+// the most expensive mistake to let through. It uses the AI domain analyzer
+// (aiAnalyzeDomainMatch — reads actual code content, not just tech-stack
+// keywords/file paths) as the authoritative verdict, with the cheap
+// classifyRepoDomain heuristic run first purely as an instant, free
+// short-circuit for the obvious-mismatch case (saves an AI call when the
+// tech stack alone already rules a domain out) — it is NEVER used to wave a
+// submission through on its own, only to reject early.
 const checkGithubDomain = asyncHandler(async (req, res) => {
   const { domain, githubUrl } = req.body
   if (!domain) throw new ApiError(400, 'domain is required')
@@ -55,15 +64,42 @@ const checkGithubDomain = asyncHandler(async (req, res) => {
     throw new ApiError(400, `Could not analyze that repository: ${err.message}`)
   }
 
-  const detected = classifyRepoDomain(context)
-  const compatible = domainsAreCompatible(domain, detected)
+  // Fast, free short-circuit: only acts on a confident heuristic mismatch,
+  // never on a heuristic "match" (which could still be wrong — see
+  // aiAnalyzeDomainMatch's docstring).
+  const heuristic = classifyRepoDomain(context)
+  if (heuristic.confidence === 'high' && !domainsAreCompatible(domain, heuristic)) {
+    return res.status(200).json(new ApiResponse(200, {
+      compatible: false,
+      detectedDomain: heuristic.domain,
+      message: `This repo looks like ${heuristic.domain}, not ${domain}. A certificate can only be earned when the repo's domain matches your exam domain.`
+    }))
+  }
+
+  let verdict
+  try {
+    verdict = await aiAnalyzeDomainMatch({
+      targetDomain: domain,
+      techStack: context.techStack,
+      fileTree: context.fileTree,
+      fileContents: context.fileContents,
+    })
+  } catch (err) {
+    throw new ApiError(502, `Could not verify this repository's domain right now: ${err.message}. Please try again.`)
+  }
+
+  // Combo is the strictest flow in the product — a low-confidence "match" is
+  // not good enough to greenlight committing to both phases at once.
+  const compatible = verdict.matches && verdict.confidence >= 60
 
   return res.status(200).json(new ApiResponse(200, {
     compatible,
-    detectedDomain: detected.domain,
+    detectedDomain: verdict.detectedDomain,
+    confidence: verdict.confidence,
+    reasoning: verdict.reasoning,
     message: compatible
       ? 'Repo matches the selected domain.'
-      : `This repo looks like ${detected.domain}, not ${domain}. A certificate can only be earned when the repo's domain matches your exam domain.`
+      : `This repo looks like ${verdict.detectedDomain || 'a different domain'}, not ${domain}. ${verdict.reasoning || ''} A certificate can only be earned when the repo's domain matches your exam domain.`
   }))
 })
 
@@ -94,8 +130,9 @@ const startExam = asyncHandler(async (req, res) => {
 
   // Credit gate — self-serve certification attempts only.
   // Phase 1 costs 1 skill credit. Phase 2 also costs 1 skill credit.
-  // Premium users bypass entirely. Pipeline-linked attempts skip this (handled separately).
-  if (!req.user.isPremium && (phase === 1 || phase === 2)) {
+  // No plan is unlimited — every attempt (including premium) draws a real
+  // skill credit. Pipeline-linked attempts skip this (handled separately).
+  if (phase === 1 || phase === 2) {
     await creditService.consumeCredit(userId, 'skill', { domain, phase })
   }
 
@@ -110,12 +147,24 @@ const startExam = asyncHandler(async (req, res) => {
     PHASE2_MIN_QUESTIONS,
     Math.min(PHASE2_MAX_QUESTIONS, Number(questionCount) || PHASE2_DEFAULT_QUESTIONS)
   )
+  // FIX: Phase 1's question-count bound was only ever applied inside
+  // computeTimeLimit() (for the time-limit calc) — the raw, client-supplied
+  // `questionCount` was passed straight into getPhase1Questions() and into
+  // the stored attempt. The Configure Exam modal clamps to [MIN_QUESTIONS,
+  // MAX_QUESTIONS] client-side, but nothing stopped a direct API call from
+  // requesting e.g. 500 questions (mismatched against the time limit that
+  // was computed for a bounded count), or 0/negative values. Clamp here the
+  // same way Phase 2 already does.
+  const phase1QuestionCount = Math.max(
+    MIN_QUESTIONS,
+    Math.min(MAX_QUESTIONS, Number(questionCount) || DEFAULT_QUESTIONS)
+  )
   const timeLimitSec = phase === 1
-    ? computeTimeLimit(difficulty, questionCount)
+    ? computeTimeLimit(difficulty, phase1QuestionCount)
     : computePhase2TimeLimit(difficulty, phase2QuestionCount)
 
   if (phase === 1) {
-    questions = await getPhase1Questions(domain, questionCount, category, difficulty)
+    questions = await getPhase1Questions(domain, phase1QuestionCount, category, difficulty)
   }
   // Phase 2 questions generated after project is submitted via /phase2/project
 
@@ -477,6 +526,18 @@ const submitPhase2Project = asyncHandler(async (req, res) => {
       const [frontendContext, frontendRef] = await analyzeProjectSide('frontend', frontendGithubUrl, frontendZip, id, tmpFiles)
       const [backendContext, backendRef] = await analyzeProjectSide('backend', backendGithubUrl, backendZip, id, tmpFiles)
 
+      // Domain gate for the Full Stack COMBO submission — this previously had
+      // NO validation at all: a candidate could submit two Backend repos (or
+      // even swap the frontend/backend slots) and it would sail straight
+      // through to question generation. Full Stack is the two-project combo
+      // case, so it deserves the strictest check in the product: each half
+      // is independently verified against its own expected sub-domain via the
+      // AI analyzer (sampleLabel tells the model which half it's looking at,
+      // so a plain "Frontend"/"Backend" verdict on the matching half still
+      // counts as a pass — see DOMAIN_ANALYZER_SYSTEM's special case).
+      await assertDomainMatches('Frontend', frontendContext, 'frontend')
+      await assertDomainMatches('Backend', backendContext, 'backend')
+
       context = mergeProjectContexts(frontendContext, backendContext)
       projectRef = `frontend:${frontendRef} | backend:${backendRef}`
     } else {
@@ -491,23 +552,6 @@ const submitPhase2Project = asyncHandler(async (req, res) => {
       if (githubUrl) {
         context = await analyzeGithubRepo(githubUrl)
         projectRef = githubUrl
-
-        // Domain gate — do this BEFORE spending an AI call on question
-        // generation. A certificate can only be earned when the submitted
-        // repo actually matches the domain the candidate is being examined
-        // in, so a mismatch here should stop the attempt cold rather than
-        // generate questions for a repo that can never lead to a certificate.
-        const detected = classifyRepoDomain(context)
-        if (!domainsAreCompatible(attempt.domain, detected)) {
-          const chosenDifficulty = attempt.difficulty || attempt.level || 'medium'
-          throw new ApiError(
-            400,
-            `Domain mismatch: this repo looks like ${detected.domain}, but you're taking the ` +
-            `${attempt.domain} exam (${chosenDifficulty} difficulty). A certificate can only be earned ` +
-            `when the repo's domain matches your exam domain — paste a ${attempt.domain} repository to ` +
-            `continue, or exit and start a new ${detected.domain} exam instead.`
-          )
-        }
       } else {
         const tmpZipPath = path.join(os.tmpdir(), `phase2-${id}-${Date.now()}.zip`)
         fs.writeFileSync(tmpZipPath, zipFile.buffer)
@@ -515,6 +559,16 @@ const submitPhase2Project = asyncHandler(async (req, res) => {
         context = await analyzeZip(tmpZipPath)
         projectRef = `zip:${zipFile.originalname}`
       }
+
+      // Domain gate — do this BEFORE spending an AI call on question
+      // generation, and for BOTH submission methods (GitHub URL or ZIP
+      // upload). A certificate can only be earned when the submitted
+      // project actually matches the domain the candidate is being examined
+      // in (e.g. picking "Frontend" must not be satisfiable with a Backend
+      // repo/zip, and vice versa), so a mismatch here should stop the
+      // attempt cold rather than generate questions for a project that can
+      // never lead to a certificate.
+      await assertDomainMatches(attempt.domain, context)
     }
   } catch (err) {
     if (err instanceof ApiError) throw err
@@ -573,6 +627,48 @@ const submitPhase2Project = asyncHandler(async (req, res) => {
     totalQuestions: questions.length
   }))
 })
+
+// Shared domain gate for single-domain (non-Full-Stack) Phase 2 submissions.
+// Uses the AI domain analyzer (real code content, not just tech-stack
+// keywords/file paths) as the authoritative verdict — classifyRepoDomain is
+// only used first as a free, instant short-circuit for an obvious mismatch,
+// exactly like checkGithubDomain above. Throws a 400 if the project doesn't
+// match the domain the candidate selected for this attempt.
+async function assertDomainMatches(examDomain, context, sampleLabel = null) {
+  const heuristic = classifyRepoDomain(context)
+  if (heuristic.confidence === 'high' && !domainsAreCompatible(examDomain, heuristic)) {
+    throw new ApiError(
+      400,
+      `Domain mismatch: this project looks like ${heuristic.domain}, but you're taking the ` +
+      `${examDomain} exam. A certificate can only be earned when the project's domain matches ` +
+      `your exam domain — submit a ${examDomain} project to continue, or exit and start a new ` +
+      `${heuristic.domain} exam instead.`
+    )
+  }
+
+  let verdict
+  try {
+    verdict = await aiAnalyzeDomainMatch({
+      targetDomain: examDomain,
+      techStack: context.techStack,
+      fileTree: context.fileTree,
+      fileContents: context.fileContents,
+      sampleLabel,
+    })
+  } catch (err) {
+    throw new ApiError(502, `Could not verify your project's domain right now: ${err.message}. Please try submitting again.`)
+  }
+
+  if (!verdict.matches || verdict.confidence < 60) {
+    throw new ApiError(
+      400,
+      `Domain mismatch: this project looks like ${verdict.detectedDomain || 'a different domain'}, but you're ` +
+      `taking the ${examDomain} exam. ${verdict.reasoning || ''} A certificate can only be earned when the ` +
+      `project's domain matches your exam domain — submit a ${examDomain} project to continue, or exit and ` +
+      `start a new exam in the domain that matches your project instead.`
+    )
+  }
+}
 
 // Analyzes one side (frontend or backend) of a Full Stack Phase 2 submission —
 // either a GitHub URL or an uploaded ZIP — and returns [context, ref] where
@@ -651,6 +747,11 @@ const getDomains = asyncHandler(async (req, res) => {
     select: { domain: true, phase: true, totalScore: true }
   })
 
+  // Per-category question availability (easy/medium/hard/total), read from
+  // the small pre-aggregated QuestionBankStats table — NOT a live COUNT over
+  // QuestionBank. One query for all domains at once.
+  const categoryCountsByDomain = await getCategoryCountsForDomains(DOMAINS, 1)
+
   const domainStatus = DOMAINS.map(domain => {
     const phase1Attempts = attempts.filter(a => a.domain === domain && a.phase === 1)
     const phase2Attempts = attempts.filter(a => a.domain === domain && a.phase === 2)
@@ -660,9 +761,25 @@ const getDomains = asyncHandler(async (req, res) => {
     const bestPhase1Score = Math.max(0, ...phase1Attempts.map(a => a.totalScore || 0))
     const bestPhase2Score = Math.max(0, ...phase2Attempts.map(a => a.totalScore || 0))
 
+    // { [category]: { easy, medium, hard, total } } — lets the exam config
+    // slider cap itself to what's actually available instead of always
+    // offering up to MAX_QUESTIONS regardless of the question bank.
+    const questionCounts = categoryCountsByDomain[domain] || {}
+
+    // Sub-domains (categories) shown to the candidate are driven by what's
+    // actually sitting in the question bank right now — NOT the full static
+    // EXAM_CATEGORIES list. A category with 0 active Phase 1 questions
+    // (nothing seeded/added for it yet) is dropped instead of being offered
+    // as a pickable pill that only fails once selected.
+    const categories = Object.keys(questionCounts).filter(cat => questionCounts[cat].total > 0)
+
     return {
       domain,
-      categories: EXAM_CATEGORIES[domain],
+      categories,
+      categoryQuestionCounts: questionCounts,
+      // Lets the frontend disable/grey out a domain card entirely (instead
+      // of showing "Start P1" for a domain with nothing in the bank yet).
+      hasQuestions: categories.length > 0,
       phase1: { attempted: phase1Attempts.length > 0, passed: phase1Passed, bestScore: bestPhase1Score },
       phase2: { attempted: phase2Attempts.length > 0, passed: phase2Passed, bestScore: bestPhase2Score, unlocked: true },
       // Combo certificate applies only when BOTH phases have been passed
