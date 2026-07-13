@@ -1,4 +1,4 @@
-const transporter = require('../config/nodemailer')
+const { sendTransactionalEmail } = require('../config/brevoClient')
 
 const BRAND_COLOR = '#6C63FF'
 const BG = '#0A0A0F'
@@ -60,30 +60,38 @@ function baseTemplate(content) {
 }
 
 async function sendEmail({ to, subject, html }) {
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+  if (!process.env.BREVO_API_KEY) {
     // FIX: this used to be the ONLY signal that email was disabled, and it
     // was easy to miss in a busy log stream — certificate/exam emails would
-    // appear to "just not happen" with no obvious cause. nodemailer.js now
-    // also warns once at boot, but keep this per-send warning too since it's
-    // the thing that shows up right next to the specific user/subject.
-    console.warn(`[Email] SKIPPED (SMTP_USER/SMTP_PASS not set) — would have sent to ${to}: "${subject}"`)
+    // appear to "just not happen" with no obvious cause. Keep this per-send
+    // warning so it's the thing that shows up right next to the specific
+    // user/subject.
+    console.warn(`[Email] SKIPPED (BREVO_API_KEY not set) — would have sent to ${to}: "${subject}"`)
     return
   }
   try {
-    await transporter.sendMail({
-      from: `"Proeva" <${process.env.MAIL_FROM || process.env.SMTP_USER}>`,
-      to, subject, html
+    // FIX: sending via Brevo's SMTP relay (nodemailer, port 587) worked
+    // locally but hung and timed out in production — Render (and several
+    // other hosts) block outbound SMTP ports even when credentials are
+    // correct. Switched to Brevo's HTTP API, which travels over normal
+    // HTTPS (443) and isn't subject to that restriction.
+    await sendTransactionalEmail({
+      to,
+      subject,
+      html,
+      fromEmail: process.env.MAIL_FROM || 'hello@proeva.dev',
     })
     console.log(`[Email] Sent to ${to}: "${subject}"`)
   } catch (err) {
-    // FIX: previously any transporter.sendMail failure (bad credentials,
-    // provider rate limit, invalid recipient, etc.) bubbled up as an
-    // unhandled rejection inside emailWorker's job processor and was only
-    // visible as a generic "[Queue] Inline job failed" / Bull failed-job
-    // log — with no indication it was specifically an email delivery
-    // problem. Log it explicitly here so it's unambiguous, then rethrow
-    // so the queue's normal retry/error handling still applies.
-    console.error(`[Email] FAILED to send to ${to}: "${subject}" —`, err.message)
+    // FIX: previously any send failure (bad credentials, provider rate
+    // limit, invalid recipient, etc.) bubbled up as an unhandled rejection
+    // inside emailWorker's job processor and was only visible as a generic
+    // "[Queue] Inline job failed" / Bull failed-job log — with no
+    // indication it was specifically an email delivery problem. Log it
+    // explicitly here so it's unambiguous, then rethrow so the queue's
+    // normal retry/error handling still applies.
+    const detail = err.response?.data?.message || err.message
+    console.error(`[Email] FAILED to send to ${to}: "${subject}" —`, detail)
     throw err
   }
 }

@@ -31,8 +31,12 @@ const googleAuthSchema = z.object({
   accessToken: z.string().min(1)   // was: idToken
 })
 
+const resendVerificationSchema = z.object({
+  email: z.string().email()
+})
+
 // Recruiter registration is validated separately in
 // validators/recruiterAuthValidators.js (used by the OTP-based
 // /auth/recruiter/register/* flow against the `Recruiter` table).
 
-module.exports = { registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema, googleAuthSchema }
+module.exports = { registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema, googleAuthSchema, resendVerificationSchema }

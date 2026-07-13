@@ -6,11 +6,13 @@ const auth = require('../middleware/auth')
 const { requireCsrfHeader } = require('../middleware/csrf')
 const {
   register, verifyEmail, login, googleAuth,
-  refresh, logout, getMe, forgotPassword, resetPassword
+  refresh, logout, getMe, forgotPassword, resetPassword,
+  resendVerificationEmail
 } = require('../controllers/authController')
 const {
   registerSchema, loginSchema,
-  forgotPasswordSchema, resetPasswordSchema, googleAuthSchema
+  forgotPasswordSchema, resetPasswordSchema, googleAuthSchema,
+  resendVerificationSchema
 } = require('../validators/authValidators')
 
 // Recruiter registration/login lives entirely under /auth/recruiter/*
@@ -18,6 +20,7 @@ const {
 // own OTP-based flow. It is intentionally NOT wired up here anymore.
 router.post('/register',            authLimiter, validate(registerSchema),          register)
 router.get('/verify-email/:token',  verifyEmail)
+router.post('/resend-verification-email', authLimiter, validate(resendVerificationSchema), resendVerificationEmail)
 router.post('/login',               authLimiter, validate(loginSchema),             login)
 router.post('/google',              authLimiter, validate(googleAuthSchema),        googleAuth)
 // refresh + logout authenticate via the refreshToken COOKIE, not a Bearer
