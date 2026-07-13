@@ -291,6 +291,33 @@ const resetPassword = asyncHandler(async (req, res) => {
   return res.json(new ApiResponse(200, {}, 'Password reset successfully. Please log in.'))
 })
 
+// POST /resend-verification-email
+// FIX: previously, if the verification email failed to send during
+// register() (e.g. the SMTP timeout issue on Render), the User row was
+// still created — but there was no way to get another email without
+// hitting the 409 "Email already registered" wall on /register. This
+// gives already-created-but-unverified accounts a way out. Always returns
+// the same generic message regardless of whether the email exists/is
+// already verified, so this can't be used to enumerate registered emails.
+const resendVerificationEmail = asyncHandler(async (req, res) => {
+  const { email } = req.body
+  const GENERIC_MSG = 'If an unverified account exists for that email, a new verification link has been sent.'
+
+  const user = await prisma.user.findUnique({ where: { email } })
+
+  if (user && !user.isEmailVerified) {
+    const emailVerifyToken = generateToken()
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { emailVerifyToken }
+    })
+    const verifyUrl = `${process.env.FRONTEND_URL}/auth/verify-email/${emailVerifyToken}`
+    await emailService.sendVerifyEmail(user, verifyUrl)
+  }
+
+  return res.json(new ApiResponse(200, {}, GENERIC_MSG))
+})
+
 // NOTE: recruiter registration used to live here as `registerRecruiter`,
 // writing role:'recruiter' rows straight into the `User` table. That path
 // has been removed — it duplicated (and conflicted with) the OTP-based
@@ -300,5 +327,6 @@ const resetPassword = asyncHandler(async (req, res) => {
 
 module.exports = {
   register, verifyEmail, login, googleAuth,
-  refresh, logout, getMe, forgotPassword, resetPassword
+  refresh, logout, getMe, forgotPassword, resetPassword,
+  resendVerificationEmail
 }
