@@ -30,8 +30,7 @@ const signRecruiterRefreshToken = (recruiterId) =>
 const verifyAccessToken  = (token) => jwt.verify(token, ACCESS_SECRET)
 const verifyRefreshToken = (token) => jwt.verify(token, REFRESH_SECRET)
 
- 
-const isCrossSite = process.env.COOKIE_CROSS_SITE === 'true'
+
 
 const COOKIE_BASE = {
   httpOnly: true,
