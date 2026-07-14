@@ -36,10 +36,11 @@ async function launchBrowser() {
     })
   }
 
+  // ✅ FIX 1: headless: 'new' → headless: true
   return puppeteer.launch({
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     executablePath: EXECUTABLE_PATH_OVERRIDE || undefined, // undefined = puppeteer's own bundled Chromium
-    headless: 'new'
+    headless: true   // no more visible black window
   })
 }
 
@@ -74,18 +75,25 @@ async function renderCertPdf(data) {
   const page = await browser.newPage()
   try {
     await page.setViewport({ width: 1123, height: 794 })
-    await page.setContent(buildCertHTML(data), { waitUntil: 'networkidle0', timeout: 30000 })
+
+    // ✅ FIX 2: Use domcontentloaded + font.ready to avoid blank PDFs
+    await page.setContent(buildCertHTML(data), {
+      waitUntil: 'domcontentloaded',   // doesn't hang on external fonts
+      timeout: 15000
+    })
+
+    // Wait for fonts to render (ignoring failure if Google Fonts is blocked)
+    await page.evaluate(() => document.fonts.ready).catch(() => {})
+    // Optional tiny safety pause (just in case)
+    await new Promise(r => setTimeout(r, 300))
+
     const pdfBytes = await page.pdf({
       width: '1123px', height: '794px',
       printBackground: true,
       pageRanges: '1'
     })
     // Puppeteer v22+ returns a plain Uint8Array here, not a Node Buffer.
-    // If we pass a Uint8Array straight to res.send() or a Cloudinary
-    // upload stream, it gets treated as a JSON-serializable object instead
-    // of binary data — producing a corrupted "PDF" that viewers reject
-    // with "Failed to load PDF document". Buffer.from() is a no-op if
-    // it's already a Buffer, so this is safe either way.
+    // Buffer.from() ensures we always have a proper Buffer for downstream use.
     return Buffer.from(pdfBytes)
   } finally {
     await page.close()
@@ -444,7 +452,7 @@ function buildCertHTML(data) {
   </div>
 
   <div class="content">
-    <div class="brand-name"><span>DevCert</span></div>
+    <div class="brand-name"><span>Proeva</span></div>
 
     <div class="main-title">Certificate</div>
     <div class="sub-title-box">${theme.subtitle}</div>
@@ -477,7 +485,7 @@ function buildCertHTML(data) {
         <span class="v-id">${verificationId || '0000'}</span>
       </div>
     </div>
-    <div class="authority-line">Issued by DevCert Assessment Authority &middot; Verifiable at devcert.io/verify</div>
+    <div class="authority-line">Issued by Proeva Assessment Authority &middot; Verifiable at proeva.io/verify</div>
   </div>
 </div>
 </body>

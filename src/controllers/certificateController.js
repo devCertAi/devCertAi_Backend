@@ -78,7 +78,7 @@ const downloadCertificate = asyncHandler(async (req, res) => {
 
   res.setHeader('Content-Type', 'application/pdf')
   res.setHeader('Content-Length', safeBuffer.length)
-  res.setHeader('Content-Disposition', `attachment; filename="devcert-${cert.verificationId}.pdf"`)
+  res.setHeader('Content-Disposition', `attachment; filename="proeva-${cert.verificationId}.pdf"`)
   res.send(safeBuffer)
 })
 // PUT /:id/visibility

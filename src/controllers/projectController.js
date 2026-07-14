@@ -14,6 +14,52 @@ const os = require('os')
 const { deleteFile } = require('../services/storageService')
 const creditService = require('../services/creditService')
 const { estimateProjectSize } = require('../utils/projectSizeEstimator')
+const crypto = require('crypto')
+const { safeRedis } = require('../config/redis')
+
+// ── Size-estimate cache ──────────────────────────────────────────────────────
+// estimateProjectSize() is genuinely expensive for github/zip sources (repo
+// tree fetch / archive parsing), and until now it ran TWICE per submission:
+// once for the pre-submit preview (/estimate-size, used to show the size/
+// credit-cost card in Submit.tsx) and again inside submitProject() itself.
+// The second call was intentional — see the comment above submitProject's
+// size-detection block — because the client's estimate can never be trusted
+// for pricing. Caching the SERVER's own first result (keyed by user + a
+// hash/URL of the exact source) preserves that guarantee — nothing here
+// comes from the client's request — while letting submitProject() reuse it
+// instead of recomputing from scratch when the same source was just
+// previewed a few minutes ago.
+const SIZE_ESTIMATE_CACHE_TTL_SECONDS = 600 // 10 min: long enough to cover preview → submit, short enough to stay fresh
+
+function buildSizeEstimateCacheKey(userId, { githubUrl, zipBuffer }) {
+  if (githubUrl) {
+    return `sizeEstimate:${userId}:gh:${githubUrl.trim().toLowerCase()}`
+  }
+  if (zipBuffer) {
+    const hash = crypto.createHash('sha256').update(zipBuffer).digest('hex')
+    return `sizeEstimate:${userId}:zip:${hash}`
+  }
+  // liveUrl-only estimates are free (no I/O) — not worth caching
+  return null
+}
+
+async function getCachedSizeEstimate(userId, source) {
+  const key = buildSizeEstimateCacheKey(userId, source)
+  if (!key) return null
+  const cached = await safeRedis.get(key)
+  if (!cached) return null
+  try {
+    return JSON.parse(cached)
+  } catch {
+    return null
+  }
+}
+
+async function cacheSizeEstimate(userId, source, sizeEstimate) {
+  const key = buildSizeEstimateCacheKey(userId, source)
+  if (!key) return
+  await safeRedis.setex(key, SIZE_ESTIMATE_CACHE_TTL_SECONDS, JSON.stringify(sizeEstimate))
+}
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } })
 
@@ -61,11 +107,18 @@ const submitProject = asyncHandler(async (req, res) => {
   // submission (falls back to the cheapest tier).
   let sizeEstimate
   try {
-    sizeEstimate = await estimateProjectSize({
+    const source = {
       githubUrl: githubUrl || undefined,
       zipBuffer: req.file ? req.file.buffer : undefined,
       liveUrl: !githubUrl && !req.file ? liveUrl : undefined,
-    })
+    }
+    sizeEstimate = await getCachedSizeEstimate(userId, source)
+    if (!sizeEstimate) {
+      sizeEstimate = await estimateProjectSize(source)
+      // Cache is best-effort — if it fails or Redis is down, submission
+      // still proceeds using the value we just computed.
+      cacheSizeEstimate(userId, source, sizeEstimate).catch(() => {})
+    }
   } catch (err) {
     console.error('[submitProject] Size estimation failed, defaulting to Small tier:', err.message)
     sizeEstimate = { tier: 'small', label: 'Small', creditsCost: 1, estimatedTokens: null, stats: null }
@@ -119,11 +172,15 @@ const estimateSize = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Provide a githubUrl, liveUrl, or zipFile to estimate')
   }
 
-  const sizeEstimate = await estimateProjectSize({
+  const source = {
     githubUrl: githubUrl || undefined,
     zipBuffer: req.file ? req.file.buffer : undefined,
     liveUrl: !githubUrl && !req.file ? liveUrl : undefined,
-  })
+  }
+  const sizeEstimate = await estimateProjectSize(source)
+  // Best-effort: so the (much more expensive) call inside submitProject can
+  // reuse this exact result instead of re-deriving it from scratch.
+  cacheSizeEstimate(req.user.id, source, sizeEstimate).catch(() => {})
 
   // Also surface whether the user can currently afford this tier, so the
   // frontend can show "not enough credits" inline instead of waiting for
@@ -240,14 +297,36 @@ const reEvaluate = asyncHandler(async (req, res) => {
   }
   if (project.status === 'evaluating') throw new ApiError(400, 'Evaluation already in progress')
 
+  // Credit gate — every re-evaluation draws a real project credit, same as
+  // the initial submission. Runs BEFORE the project is mutated, so a
+  // rejected re-evaluation (insufficient credits -> ApiError 402 thrown
+  // here) never touches reEvalCount/status. Flat 1-credit charge (unlike
+  // the size-tiered charge at first submission) since re-running the same
+  // already-uploaded source doesn't need a fresh size estimate.
+  // The `_debit` snapshot is threaded through the eval job exactly like at
+  // submission time, so projectWorker.js's existing "refund on final
+  // failure" logic (keyed off job.data.creditDebit) already covers a failed
+  // re-evaluation too — no changes needed there.
+  const creditResult = await creditService.consumeCredit(
+    req.user.id,
+    'project',
+    { title: project.title, domain: project.domain, reEvaluation: true, reEvalCount: project.reEvalCount + 1 },
+    1
+  )
+  const creditDebit = creditResult?._debit
+
   await prisma.project.update({
     where: { id: project.id },
     data: { status: 'pending', reEvalCount: { increment: 1 } }
   })
 
-  await queues.projectEvalQueue.add({ projectId: project.id }, defaultOpts)
+  await queues.projectEvalQueue.add({ projectId: project.id, creditDebit }, defaultOpts)
 
-  return res.json(new ApiResponse(200, { message: 'Re-evaluation started' }))
+  return res.json(new ApiResponse(200, {
+    message: 'Re-evaluation started',
+    creditsCharged: 1,
+    balance: creditResult ? { project: creditResult.project } : undefined
+  }))
 })
 
 // DELETE /:id
