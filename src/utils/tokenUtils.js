@@ -30,15 +30,7 @@ const signRecruiterRefreshToken = (recruiterId) =>
 const verifyAccessToken  = (token) => jwt.verify(token, ACCESS_SECRET)
 const verifyRefreshToken = (token) => jwt.verify(token, REFRESH_SECRET)
 
-// ─── Cookie helpers ───────────────────────────────────────────────────────────
-// COOKIE_CROSS_SITE=true whenever the frontend and backend are on different
-// domains (e.g. Vercel frontend + Render/Railway backend). In that case the
-// cookie is "cross-site" from the browser's point of view, and Chrome/Firefox
-// will NOT attach a `sameSite: 'lax'` cookie to a cross-site XHR/fetch call —
-// only `sameSite: 'none'` (which itself requires `secure: true`, i.e. HTTPS)
-// is sent on cross-site requests. Getting this wrong doesn't break login —
-// it silently breaks every /auth/refresh call afterwards, which looks like
-// "forced to log in again every N minutes" (N = access token TTL).
+ 
 const isCrossSite = process.env.COOKIE_CROSS_SITE === 'true'
 
 const COOKIE_BASE = {
@@ -54,16 +46,10 @@ const setRefreshCookie = (res, token) =>
 const setRecruiterRefreshCookie = (res, token) =>
   res.cookie('recruiterRefreshToken', token, { ...COOKIE_BASE, maxAge: REFRESH_TTL_MS })
 
-// Exported so every clearCookie() call site (logout, delete-account, etc.)
-// uses the EXACT same attributes the cookie was set with. Passing mismatched
-// options to res.clearCookie() means some browsers silently keep the old
-// cookie alive after "logout".
+ 
 const CLEAR_COOKIE_OPTS = { ...COOKIE_BASE }
 
-// ─── DB-backed refresh token store ───────────────────────────────────────────
-// We store a SHA-256 hash of the raw JWT in the DB.
-// The raw token lives only in the httpOnly cookie — never logged or exposed.
-
+ 
 function hashToken(rawToken) {
   return crypto.createHash('sha256').update(rawToken).digest('hex')
 }

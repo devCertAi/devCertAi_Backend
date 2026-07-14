@@ -246,19 +246,20 @@ model Project {
 // ─── Certificates ────────────────────────────────────────────────────────────
 
 model Certificate {
-  id             String  @id @default(cuid())
+  id             String   @id @default(cuid())
   userId         String
   type           String
   domain         String
   level          String
   score          Int
-  projectId      String? @unique
-  examAttemptId  String? @unique
+  projectId      String?  @unique
+  examAttemptId  String?  @unique
   certificateUrl String?
-  verificationId String  @unique @default(cuid())
-  isPublic       Boolean @default(true)
+  verificationId String   @unique @default(cuid())
+  isPublic       Boolean  @default(true)
   createdAt      DateTime @default(now())
-  difficulty String?
+  difficulty     String?
+  metadata       Json?
 
   examAttempt ExamAttempt? @relation(fields: [examAttemptId], references: [id])
   project     Project?     @relation(fields: [projectId],     references: [id])
@@ -267,6 +268,7 @@ model Certificate {
   @@index([userId])
   @@index([verificationId])
 }
+
 
 model QuestionBankStats {
   id        String   @id @default(cuid())

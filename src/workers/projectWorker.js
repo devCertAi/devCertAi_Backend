@@ -64,6 +64,23 @@ queues.projectEvalQueue.process(async (job) => {
         projectId,
         userId: project.userId
       }, defaultOpts)
+    } else {
+      // A re-evaluation can drop the score below the qualifying threshold
+      // after a certificate was already issued for an earlier (higher)
+      // score. That certificate no longer reflects reality, so revoke it
+      // instead of leaving a certificate on file for a project that
+      // currently scores below 40. No-op for projects that never had one.
+      const staleCert = await prisma.certificate.findUnique({ where: { projectId } })
+      if (staleCert) {
+        console.log(`[ProjectWorker] Re-evaluation score ${report.overallScore} dropped below threshold — revoking certificate for project ${projectId}`)
+        try {
+          const cloudinary = require('../config/cloudinary')
+          await cloudinary.uploader.destroy(`devcert/certificates/cert_${staleCert.verificationId}`, { resource_type: 'raw' })
+        } catch (cleanupErr) {
+          console.error(`[ProjectWorker] Failed to delete revoked certificate PDF for project ${projectId}:`, cleanupErr.message)
+        }
+        await prisma.certificate.delete({ where: { id: staleCert.id } })
+      }
     }
 
     // Notify user
