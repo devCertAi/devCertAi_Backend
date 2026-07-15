@@ -1,21 +1,4 @@
-/**
- * paymentController.js
- *
- * Handles Razorpay payment flow and credit grants on payment success.
- *
- * CREDIT GRANTS ON PAYMENT:
- * Every paid plan (starter/growth/pro/recruiter) grants a fixed bundle of
- * project + skill credits — see PLAN_CREDITS in validators/paymentValidators.
- * Credits STACK on top of any existing balance and never expire early; if
- * the same plan (or another paid plan) is bought again before expiry, the
- * new credits add on top and the expiry extends to the later date.
- *
- * No plan grants unlimited/"infinity" project evaluations or exams — every
- * AI-metered action always draws from a real, finite credit balance, so
- * spend stays covered by what was actually paid. `isPremium` is now purely
- * a cosmetic/convenience flag (ads-free, full report view, priority queue,
- * higher re-eval cap) — it no longer bypasses credit consumption anywhere.
- */
+ 
 
 const crypto = require('crypto')
 const prisma = require('../config/database')
@@ -27,12 +10,7 @@ const queues = require('../queues')
 const { defaultOpts } = queues
 const { PLAN_PRICES, PLAN_DURATIONS, PLAN_CREDITS } = require('../validators/paymentValidators')
 const creditService = require('../services/creditService')
-
-/**
- * Apply payment success effects.
- * Called from both /verify (client-side) and /webhook (server-side).
- * Idempotent: checks payment.status !== 'paid' before applying.
- */
+ 
 async function applyPaymentSuccess(orderId, paymentId) {
   const payment = await prisma.payment.findUnique({ where: { razorpayOrderId: orderId } })
   if (!payment || payment.status === 'paid') return payment
@@ -50,7 +28,7 @@ async function applyPaymentSuccess(orderId, paymentId) {
     // for the life of its credits, but it never bypasses credit checks.
     prisma.user.update({
       where: { id: payment.userId },
-      data: { isPremium: true, premiumExpiresAt: expiresAt }
+      data: { isPremium: true, premiumExpiresAt: expiresAt, premiumPlan: payment.plan }
     })
   ])
 
