@@ -2,6 +2,14 @@ const cloudinary = require('../config/cloudinary')
 const prisma = require('../config/database')
 const { generateVerificationId } = require('../utils/generateIds')
 
+// ────────────────────────────────────────────────────────────────────────
+// Proeva logo (faceted gem mark) — embedded as a base64 data URI so it
+// renders identically locally AND inside the sandboxed Chromium on Render.
+// Puppeteer/Chromium cannot reliably fetch external image URLs inside some
+// serverless/container network setups, so we inline the asset instead of
+// pointing at a hosted file or Cloudinary URL.
+// ────────────────────────────────────────────────────────────────────────
+const LOGO_DATA_URI = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAwIiBoZWlnaHQ9IjYwMCIgdmlld0JveD0iMCAwIDYwMCA2MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPGRlZnM+CiAgICA8IS0tIEJhY2tncm91bmQgR3JhZGllbnQgLS0+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9ImJnX2ciIGN4PSI1MCUiIGN5PSI1MCUiIHI9IjkwJSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMxQTIwMjgiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMEEwRDEyIi8+CiAgICA8L3JhZGlhbEdyYWRpZW50PgoKICAgIDwhLS0gRGlhbW9uZCBCYXNlIEdyYWRpZW50cyAtLT4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0idGVhbF9nIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwRjVENCIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwMEEzODkiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InZpb2xldF9nIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0E3OEJGQSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM2RDI4RDkiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICAKICAgIDwhLS0gRGlhbW9uZCBEYXJrIEZhY2V0cyAoU2hhZG93KSAtLT4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0idGVhbF9kYXJrIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwODU3MyIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwMDREM0YiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InZpb2xldF9kYXJrIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzVBM0ZDQyIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMyRTFBNzMiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CgogICAgPCEtLSBHbGFzcyBIaWdobGlnaHQgR3JhZGllbnQgLS0+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImdsYXNzX2ciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0ZGRkZGRiIgc3RvcC1vcGFjaXR5PSIwLjgiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjRkZGRkZGIiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CgogICAgPCEtLSBQcm9mZXNzaW9uYWwgR2xvdyBiZWhpbmQgdGhlIGRpYW1vbmQgLS0+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9Imdsb3dfZyIgY3g9IjUwJSIgY3k9IjUwJSIgcj0iNTAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwRjVENCIgc3RvcC1vcGFjaXR5PSIwLjIiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDBGNUQ0IiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvcmFkaWFsR3JhZGllbnQ+CgogICAgPCEtLSBTdWJ0bGUgQm9yZGVyIEdyYWRpZW50IC0tPgogICAgPGxpbmVhckdyYWRpZW50IGlkPSJib3JkZXJfZyIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMyQTMxM0MiIHN0b3Atb3BhY2l0eT0iMC44Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzE0MUEyNCIgc3RvcC1vcGFjaXR5PSIwLjgiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgoKICA8IS0tIEJhY2tncm91bmQgQ2FyZCAtLT4KICA8cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNjAwIiBoZWlnaHQ9IjYwMCIgcng9IjE0MCIgZmlsbD0idXJsKCNiZ19nKSIvPgogIDxyZWN0IHg9IjIiIHk9IjIiIHdpZHRoPSI1OTYiIGhlaWdodD0iNTk2IiByeD0iMTM4IiBmaWxsPSJub25lIiBzdHJva2U9InVybCgjYm9yZGVyX2cpIiBzdHJva2Utd2lkdGg9IjIiLz4KCiAgPCEtLSBBbWJpZW50IEdsb3cgYmVoaW5kIHRoZSBkaWFtb25kIC0tPgogIDxjaXJjbGUgY3g9IjMwMCIgY3k9IjI4OCIgcj0iMTgwIiBmaWxsPSJ1cmwoI2dsb3dfZykiIC8+CgogIDwhLS0gRGlhbW9uZCBMb2dvIEdyb3VwIChDZW50ZXJlZCkgLS0+CiAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNDQsIDMyKSI+CiAgICAKICAgIDwhLS0gTGVmdCBMYXJnZSBGYWNldCAtLT4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDExMiAxNTYsMjU2IDI1Niw0MDAiIGZpbGw9InVybCgjdGVhbF9nKSIvPgogICAgCiAgICA8IS0tIFJpZ2h0IExhcmdlIEZhY2V0IC0tPgogICAgPHBvbHlnb24gcG9pbnRzPSIyNTYsMTEyIDM1NiwyNTYgMjU2LDQwMCIgZmlsbD0idXJsKCN2aW9sZXRfZykiLz4KICAgIAogICAgPCEtLSBCb3R0b20gTGVmdCBEYXJrIEZhY2V0IC0tPgogICAgPHBvbHlnb24gcG9pbnRzPSIxNTYsMjU2IDI1Niw0MDAgMjU2LDMwMCIgZmlsbD0idXJsKCN0ZWFsX2RhcmspIiBvcGFjaXR5PSIwLjg1Ii8+CiAgICAKICAgIDwhLS0gQm90dG9tIFJpZ2h0IERhcmsgRmFjZXQgLS0+CiAgICA8cG9seWdvbiBwb2ludHM9IjM1NiwyNTYgMjU2LDQwMCAyNTYsMzAwIiBmaWxsPSJ1cmwoI3Zpb2xldF9kYXJrKSIgb3BhY2l0eT0iMC44NSIvPgogICAgCiAgICA8IS0tIFRvcCBMZWZ0IFNtYWxsIEhpZ2hsaWdodCAtLT4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDExMiAyMTAsMTgyIDI1NiwyMjQiIGZpbGw9IiMwMEY1RDQiIG9wYWNpdHk9IjAuOSIvPgogICAgCiAgICA8IS0tIFRvcCBSaWdodCBTbWFsbCBIaWdobGlnaHQgLS0+CiAgICA8cG9seWdvbiBwb2ludHM9IjI1NiwxMTIgMzAyLDE4MiAyNTYsMjI0IiBmaWxsPSIjQzRCNUZEIiBvcGFjaXR5PSIwLjkiLz4KCiAgICA8IS0tIEdsYXNzIFJlZmxlY3Rpb24gRWZmZWN0IChPcHRpb25hbCwgYWRkcyBhIDNEIGdlbSBsb29rKSAtLT4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDExMiAyMDAsMTYwIDI1NiwyNDAiIGZpbGw9InVybCgjZ2xhc3NfZykiIG9wYWNpdHk9IjAuMTUiIC8+CiAgICAKICAgIDwhLS0gSW5uZXIgRGlhbW9uZCBFZGdlIEhpZ2hsaWdodHMgZm9yIFN0cnVjdHVyZSAtLT4KICAgIDxwYXRoIGQ9Ik0yNTYsMTEyIEwyNTYsNDAwIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS1vcGFjaXR5PSIwLjEiIHN0cm9rZS13aWR0aD0iMS41IiAvPgogICAgPHBhdGggZD0iTTE1NiwyNTYgTDM1NiwyNTYiIHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLW9wYWNpdHk9IjAuMSIgc3Ryb2tlLXdpZHRoPSIxLjUiIC8+CiAgICA8cGF0aCBkPSJNMjU2LDExMiBMMjEwLDE4MiBMMjU2LDIyNCBMMzAyLDE4MiBaIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS1vcGFjaXR5PSIwLjIiIHN0cm9rZS13aWR0aD0iMSIgZmlsbD0ibm9uZSIgLz4KCiAgPC9nPgo8L3N2Zz4='
 
 // ────────────────────────────────────────────────────────────────────────
 
@@ -28,7 +36,20 @@ let browserPromise = null
 async function launchBrowser() {
   if (IS_RENDER) {
     const executablePath = EXECUTABLE_PATH_OVERRIDE || (await chromium.executablePath())
+
+    // 🔎 Log exactly what we're about to launch — this alone tells you 90%
+    // of the time why it works locally but not on Render. Check your
+    // Render service logs after a failed generation for these lines.
+    console.log('[certificateService] IS_RENDER =', IS_RENDER)
+    console.log('[certificateService] executablePath =', executablePath)
+    console.log('[certificateService] chromium args =', chromium.args)
+
     return puppeteer.launch({
+      // chromium.args already ships the flags @sparticuz/chromium recommends
+      // for constrained/serverless containers. Deliberately NOT adding
+      // --single-process here — on recent Chromium builds (147+) it's known
+      // to cause crashes/hangs rather than help, due to sandbox/zygote
+      // changes upstream. Keep this close to the library defaults.
       args: chromium.args,
       executablePath,
       headless: chromium.headless,
@@ -58,7 +79,12 @@ async function getBrowser() {
   if (!browserPromise) {
     browserPromise = launchBrowser().catch(err => {
       browserPromise = null
+      // 🔎 This is the single most useful log line for the Render issue —
+      // it captures the REAL crash reason (missing lib, OOM kill, wrong
+      // chromium/puppeteer-core version pairing, etc.) instead of letting
+      // the request die with a generic timeout.
       console.error('[certificateService] Failed to launch browser:', err.message)
+      console.error(err.stack)
       throw err
     })
   }
@@ -95,6 +121,12 @@ async function renderCertPdf(data) {
     // Puppeteer v22+ returns a plain Uint8Array here, not a Node Buffer.
     // Buffer.from() ensures we always have a proper Buffer for downstream use.
     return Buffer.from(pdfBytes)
+  } catch (err) {
+    // 🔎 Surface page-level failures (bad HTML, font timeout, PDF render
+    // crash) separately from browser-launch failures above.
+    console.error('[certificateService] renderCertPdf failed:', err.message)
+    console.error(err.stack)
+    throw err
   } finally {
     await page.close()
   }
@@ -291,19 +323,33 @@ function buildCertHTML(data) {
       z-index: 1;
     }
 
+    /* Logo lockup: gem mark + wordmark, top-right corner */
     .brand-name {
       position: absolute;
-      top: 60px;
+      top: 50px;
       right: 80px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      z-index: 2;
+    }
+
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      display: block;
+    }
+
+    .brand-wordmark {
       font-family: 'Cinzel', serif;
       font-size: 26px;
       font-weight: 700;
       letter-spacing: 2px;
       color: #0f172a;
-      z-index: 2;
     }
 
-    .brand-name span { color: #d97706; }
+    .brand-wordmark span { color: #d97706; }
 
     .main-title {
       font-family: 'Playfair Display', serif;
@@ -452,7 +498,10 @@ function buildCertHTML(data) {
   </div>
 
   <div class="content">
-    <div class="brand-name"><span>Proeva</span></div>
+    <div class="brand-name">
+      <img class="brand-logo" src="${LOGO_DATA_URI}" alt="Proeva" />
+      <span class="brand-wordmark"><span>Proeva</span></span>
+    </div>
 
     <div class="main-title">Certificate</div>
     <div class="sub-title-box">${theme.subtitle}</div>
