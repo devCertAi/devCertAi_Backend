@@ -5,6 +5,7 @@
 const axios = require('axios')
 const { analyzeGithubRepo } = require('./githubAnalyzer')
 const { analyzeZip } = require('./zipAnalyzer')
+const toolAnalysis = require('../services/toolAnalysis')
 
 const PYTHON_URL = process.env.PYTHON_PIPELINE_URL || 'http://localhost:8001'
 
@@ -54,6 +55,23 @@ async function evaluateProject(project) {
   console.log('Tech Stack:', techStack)
   console.log('File Content Length:', fileContents?.length || 0)
 
+  // Run the deterministic static-analysis layer (ESLint/Ruff, Semgrep,
+  // Gitleaks, Trivy, jscpd, Lizard, signal-file domain detection) BEFORE
+  // calling the AI pipeline, so the AI receives verified tool output
+  // instead of guessing everything from raw code. This never blocks or
+  // fails the evaluation — any staging/tool error just results in an
+  // empty-but-valid toolResults object, and the AI pipeline falls back to
+  // its own judgment exactly as before.
+  let toolResults = {}
+  try {
+    console.log('[toolAnalysis] Running static analysis for project:', project.id)
+    toolResults = await toolAnalysis.analyzeProject(project)
+    console.log('[toolAnalysis] Done:', JSON.stringify(toolResults.meta || {}))
+  } catch (err) {
+    console.error('[toolAnalysis] analyzeProject failed (continuing without it):', err.message)
+    toolResults = {}
+  }
+
   const { data } = await client.post('/evaluate', {
     project: {
       id: project.id,
@@ -67,7 +85,8 @@ async function evaluateProject(project) {
       description: project.description || '',
       fileTree,
       fileContents,
-      techStack
+      techStack,
+      toolResults
     }
   })
 
@@ -99,7 +118,19 @@ async function evaluateProject(project) {
     bestPracticesReport: result.bestPracticesReport || {},
     improvementsReport: result.improvementsReport || {},
     domainReport: result.domainReport || {},
-    questions: result.questions || {}
+    questions: result.questions || {},
+    // Defensive defaults — report.* already carries these once the Python
+    // pipeline synthesizes them, but this guards against an older/rolled-
+    // back pipeline version that doesn't produce them yet.
+    toolResults: report.toolResults || toolResults || {},
+    findingsSource: report.findingsSource || {},
+    toolsUsed: report.toolsUsed || (toolResults?.meta?.toolsRun || []),
+    methodology: report.methodology || 'AI code review',
+    // Raw file tree + detected tech stack, so the frontend can render an
+    // actual code-structure view instead of only text findings. Capped at
+    // 100 entries upstream in githubAnalyzer/zipAnalyzer already.
+    fileTree,
+    techStack,
   }
 
   console.log('\n========== RETURNING TO NODE WORKER ==========')

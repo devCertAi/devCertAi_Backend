@@ -18,16 +18,7 @@ queues.certificateGenQueue.process(async (job) => {
   if (type === 'project_eval' && projectId) {
     const project = await prisma.project.findUnique({ where: { id: projectId } })
     if (!project) throw new Error('Project not found')
-    // FIX: use the domain the user selected at submission time.
-    // The AI pipeline may overwrite project.domain via its domain classifier
-    // (pipeline.py patches domain when confidence >= 70). We want the certificate
-    // to reflect the domain the user intentionally chose, not an AI re-label.
-    // The user-submitted domain is preserved in evaluationReport.domainReport
-    // only as metadata; project.domain may have been mutated by the worker.
-    // To restore the original intent: use the domain stored at project creation
-    // (before any AI patching). Since the worker does NOT update project.domain
-    // itself — only pythonPipelineClient returns a potentially different domain —
-    // the safest fix is to read evaluationReport.domainReport and fall back to
+ 
     // project.domain if not present.
     const evalReport = project.evaluationReport || {}
     const dr = evalReport.domainReport || {}
@@ -69,11 +60,7 @@ queues.certificateGenQueue.process(async (job) => {
       return
     }
   } else if (type === 'combo_cert' && phase1AttemptId && phase2AttemptId) {
-    // Combo certificate covers TWO attempts (Phase 1 + Phase 2 of the same
-    // domain), so it can't be keyed by the unique `examAttemptId` column the
-    // way skill_cert is. Instead, guard against duplicates by checking for an
-    // existing combo_cert for this user+domain, and stash both attempt ids
-    // (and their individual scores) in `metadata` for reference/display.
+     
     const existing = await prisma.certificate.findFirst({
       where: { userId, type: 'combo_cert', domain: jobDomain }
     })
@@ -113,18 +100,7 @@ queues.certificateGenQueue.process(async (job) => {
     userName: user.name
   })
 
-  // Real-time notify (project certs only): certificate generation runs as
-  // a SEPARATE queued job from the evaluation itself (see
-  // projectWorker.js), so by the time this job runs, project.status is
-  // already 'completed' — the frontend's project:updated listener already
-  // fired once (without a certificate) and its polling loop already
-  // stopped, since it only polls while status is non-terminal. Without a
-  // second emit here, ProjectDetail's certificate tab never learns the
-  // cert exists until the user navigates away and back (which forces a
-  // fresh fetch). Emitting project:updated again — now that the cert row
-  // exists — makes the already-registered listener refetch and pick it up
-  // immediately, matching the "no manual refresh" behaviour the first emit
-  // already gives the score/status update.
+ 
   if (type === 'project_eval' && projectId) {
     try {
       const { getIO } = require('../socket')
