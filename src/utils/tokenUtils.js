@@ -29,7 +29,21 @@ const signRecruiterRefreshToken = (recruiterId) =>
 
 const verifyAccessToken  = (token) => jwt.verify(token, ACCESS_SECRET)
 const verifyRefreshToken = (token) => jwt.verify(token, REFRESH_SECRET)
- 
+
+// ─── Cookie helpers ───────────────────────────────────────────────────────────
+// When frontend and backend are on DIFFERENT domains (e.g. Vercel + Render),
+// the cookie is "cross-site" from the browser's point of view. Chrome/Firefox
+// will NOT attach a sameSite:'lax' cookie to a cross-site fetch/XHR — only
+// sameSite:'none' (which requires Secure:true, i.e. HTTPS) works.
+//
+// Detection priority:
+//   1. COOKIE_CROSS_SITE=true/false env var (explicit override)
+//   2. Auto-detect: compare FRONTEND_URL vs BACKEND_URL hostnames
+//   3. Fallback: production = cross-site (safe default)
+//
+// If you don't set COOKIE_CROSS_SITE and the env vars are missing,
+// the old code silently defaulted to sameSite:'lax' — which caused
+// the cookie to be dropped on every /auth/refresh call in production.
 
 function detectCrossSite() {
   const explicit = process.env.COOKIE_CROSS_SITE
