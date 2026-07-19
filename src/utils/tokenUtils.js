@@ -29,8 +29,26 @@ const signRecruiterRefreshToken = (recruiterId) =>
 
 const verifyAccessToken  = (token) => jwt.verify(token, ACCESS_SECRET)
 const verifyRefreshToken = (token) => jwt.verify(token, REFRESH_SECRET)
+ 
 
+function detectCrossSite() {
+  const explicit = process.env.COOKIE_CROSS_SITE
+  if (explicit === 'true') return true
+  if (explicit === 'false') return false
 
+  const frontend = (process.env.FRONTEND_URL || '').replace(/\/+$/, '')
+  const backend  = (process.env.BACKEND_URL || '').replace(/\/+$/, '')
+
+  if (frontend && backend) {
+    try {
+      return new URL(frontend).hostname !== new URL(backend).hostname
+    } catch {}
+  }
+
+  return process.env.NODE_ENV === 'production'
+}
+
+const isCrossSite = detectCrossSite()
 
 const COOKIE_BASE = {
   httpOnly: true,
@@ -45,10 +63,16 @@ const setRefreshCookie = (res, token) =>
 const setRecruiterRefreshCookie = (res, token) =>
   res.cookie('recruiterRefreshToken', token, { ...COOKIE_BASE, maxAge: REFRESH_TTL_MS })
 
- 
+// Exported so every clearCookie() call site (logout, delete-account, etc.)
+// uses the EXACT same attributes the cookie was set with. Passing mismatched
+// options to res.clearCookie() means some browsers silently keep the old
+// cookie alive after "logout".
 const CLEAR_COOKIE_OPTS = { ...COOKIE_BASE }
 
- 
+// ─── DB-backed refresh token store ───────────────────────────────────────────
+// We store a SHA-256 hash of the raw JWT in the DB.
+// The raw token lives only in the httpOnly cookie — never logged or exposed.
+
 function hashToken(rawToken) {
   return crypto.createHash('sha256').update(rawToken).digest('hex')
 }

@@ -9,7 +9,7 @@ const { generateVerificationId } = require('../utils/generateIds')
 // serverless/container network setups, so we inline the asset instead of
 // pointing at a hosted file or Cloudinary URL.
 // ────────────────────────────────────────────────────────────────────────
-const LOGO_DATA_URI = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAwIiBoZWlnaHQ9IjYwMCIgdmlld0JveD0iMCAwIDYwMCA2MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPGRlZnM+CiAgICA8IS0tIEJhY2tncm91bmQgR3JhZGllbnQgLS0+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9ImJnX2ciIGN4PSI1MCUiIGN5PSI1MCUiIHI9IjkwJSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMxQTIwMjgiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMEEwRDEyIi8+CiAgICA8L3JhZGlhbEdyYWRpZW50PgoKICAgIDwhLS0gRGlhbW9uZCBCYXNlIEdyYWRpZW50cyAtLT4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0idGVhbF9nIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwRjVENCIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwMEEzODkiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InZpb2xldF9nIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0E3OEJGQSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM2RDI4RDkiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICAKICAgIDwhLS0gRGlhbW9uZCBEYXJrIEZhY2V0cyAoU2hhZG93KSAtLT4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0idGVhbF9kYXJrIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwODU3MyIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwMDREM0YiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InZpb2xldF9kYXJrIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzVBM0ZDQyIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMyRTFBNzMiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CgogICAgPCEtLSBHbGFzcyBIaWdobGlnaHQgR3JhZGllbnQgLS0+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImdsYXNzX2ciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0ZGRkZGRiIgc3RvcC1vcGFjaXR5PSIwLjgiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjRkZGRkZGIiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CgogICAgPCEtLSBQcm9mZXNzaW9uYWwgR2xvdyBiZWhpbmQgdGhlIGRpYW1vbmQgLS0+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9Imdsb3dfZyIgY3g9IjUwJSIgY3k9IjUwJSIgcj0iNTAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwRjVENCIgc3RvcC1vcGFjaXR5PSIwLjIiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDBGNUQ0IiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvcmFkaWFsR3JhZGllbnQ+CgogICAgPCEtLSBTdWJ0bGUgQm9yZGVyIEdyYWRpZW50IC0tPgogICAgPGxpbmVhckdyYWRpZW50IGlkPSJib3JkZXJfZyIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMyQTMxM0MiIHN0b3Atb3BhY2l0eT0iMC44Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzE0MUEyNCIgc3RvcC1vcGFjaXR5PSIwLjgiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgoKICA8IS0tIEJhY2tncm91bmQgQ2FyZCAtLT4KICA8cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNjAwIiBoZWlnaHQ9IjYwMCIgcng9IjE0MCIgZmlsbD0idXJsKCNiZ19nKSIvPgogIDxyZWN0IHg9IjIiIHk9IjIiIHdpZHRoPSI1OTYiIGhlaWdodD0iNTk2IiByeD0iMTM4IiBmaWxsPSJub25lIiBzdHJva2U9InVybCgjYm9yZGVyX2cpIiBzdHJva2Utd2lkdGg9IjIiLz4KCiAgPCEtLSBBbWJpZW50IEdsb3cgYmVoaW5kIHRoZSBkaWFtb25kIC0tPgogIDxjaXJjbGUgY3g9IjMwMCIgY3k9IjI4OCIgcj0iMTgwIiBmaWxsPSJ1cmwoI2dsb3dfZykiIC8+CgogIDwhLS0gRGlhbW9uZCBMb2dvIEdyb3VwIChDZW50ZXJlZCkgLS0+CiAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNDQsIDMyKSI+CiAgICAKICAgIDwhLS0gTGVmdCBMYXJnZSBGYWNldCAtLT4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDExMiAxNTYsMjU2IDI1Niw0MDAiIGZpbGw9InVybCgjdGVhbF9nKSIvPgogICAgCiAgICA8IS0tIFJpZ2h0IExhcmdlIEZhY2V0IC0tPgogICAgPHBvbHlnb24gcG9pbnRzPSIyNTYsMTEyIDM1NiwyNTYgMjU2LDQwMCIgZmlsbD0idXJsKCN2aW9sZXRfZykiLz4KICAgIAogICAgPCEtLSBCb3R0b20gTGVmdCBEYXJrIEZhY2V0IC0tPgogICAgPHBvbHlnb24gcG9pbnRzPSIxNTYsMjU2IDI1Niw0MDAgMjU2LDMwMCIgZmlsbD0idXJsKCN0ZWFsX2RhcmspIiBvcGFjaXR5PSIwLjg1Ii8+CiAgICAKICAgIDwhLS0gQm90dG9tIFJpZ2h0IERhcmsgRmFjZXQgLS0+CiAgICA8cG9seWdvbiBwb2ludHM9IjM1NiwyNTYgMjU2LDQwMCAyNTYsMzAwIiBmaWxsPSJ1cmwoI3Zpb2xldF9kYXJrKSIgb3BhY2l0eT0iMC44NSIvPgogICAgCiAgICA8IS0tIFRvcCBMZWZ0IFNtYWxsIEhpZ2hsaWdodCAtLT4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDExMiAyMTAsMTgyIDI1NiwyMjQiIGZpbGw9IiMwMEY1RDQiIG9wYWNpdHk9IjAuOSIvPgogICAgCiAgICA8IS0tIFRvcCBSaWdodCBTbWFsbCBIaWdobGlnaHQgLS0+CiAgICA8cG9seWdvbiBwb2ludHM9IjI1NiwxMTIgMzAyLDE4MiAyNTYsMjI0IiBmaWxsPSIjQzRCNUZEIiBvcGFjaXR5PSIwLjkiLz4KCiAgICA8IS0tIEdsYXNzIFJlZmxlY3Rpb24gRWZmZWN0IChPcHRpb25hbCwgYWRkcyBhIDNEIGdlbSBsb29rKSAtLT4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDExMiAyMDAsMTYwIDI1NiwyNDAiIGZpbGw9InVybCgjZ2xhc3NfZykiIG9wYWNpdHk9IjAuMTUiIC8+CiAgICAKICAgIDwhLS0gSW5uZXIgRGlhbW9uZCBFZGdlIEhpZ2hsaWdodHMgZm9yIFN0cnVjdHVyZSAtLT4KICAgIDxwYXRoIGQ9Ik0yNTYsMTEyIEwyNTYsNDAwIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS1vcGFjaXR5PSIwLjEiIHN0cm9rZS13aWR0aD0iMS41IiAvPgogICAgPHBhdGggZD0iTTE1NiwyNTYgTDM1NiwyNTYiIHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLW9wYWNpdHk9IjAuMSIgc3Ryb2tlLXdpZHRoPSIxLjUiIC8+CiAgICA8cGF0aCBkPSJNMjU2LDExMiBMMjEwLDE4MiBMMjU2LDIyNCBMMzAyLDE4MiBaIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS1vcGFjaXR5PSIwLjIiIHN0cm9rZS13aWR0aD0iMSIgZmlsbD0ibm9uZSIgLz4KCiAgPC9nPgo8L3N2Zz4='
+const LOGO_DATA_URI = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAwIiBoZWlnaHQ9IjYwMCIgdmlld0JveD0iMCAwIDYwMCA2MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPGRlZnM+CiAgICA8IS0tIEJhY2tncm91bmQgR3JhZGllbnQgLS0+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9ImJnX2ciIGN4PSI1MCUiIGN5PSI1MCUiIHI9IjkwJSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMxQTIwMjgiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMEEwRDEyIi8+CiAgICA8L3JhZGlhbEdyYWRpZW50PgoKICAgIDwhLS0gRGlhbW9uZCBCYXNlIEdyYWRpZW50cyAtLT4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0idGVhbF9nIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwRjVENCIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwMEEzODkiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InZpb2xldF9nIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0E3OEJGQSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiM2RDI4RDkiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICAKICAgIDwhLS0gRGlhbW9uZCBEYXJrIEZhY2V0cyAoU2hhZG93KSAtLT4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0idGVhbF9kYXJrIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwODU3MyIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwMEQ0M0YiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InZpb2xldF9kYXJrIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzVBM0ZDQyIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMyRTFBNzMiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CgogICAgPCEtLSBHbGFzcyBIaWdobGlnaHQgR3JhZGllbnQgLS0+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9Imdsb3dfZyIgY3g9IjUwJSIgY3k9IjUwJSIgcj0iNTAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI0ZGRkZGRiIgc3RvcC1vcGFjaXR5PSIwLjgiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjRkZGRkZGIiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CgogICAgPCEtLSBQcm9mZXNzaW9uYWwgR2xvdyBiZWhpbmQgdGhlIGRpYW1vbmQgLS0+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9Imdsb3dfZyIgY3g9IjUwJSIgY3k9IjUwJSIgcj0iNTAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzAwRjVENCIgc3RvcC1vcGFjaXR5PSIwLjIiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDBGNUQ0IiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvcmFkaWFsR3JhZGllbnQ+CgogICAgPCEtLSBTdWJ0bGUgQm9yZGVyIEdyYWRpZW50IC0tPgogICAgPGxpbmVhckdyYWRpZW50IGlkPSJib3JkZXJfZyIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMyQTMxM0MiIHN0b3Atb3BhY2l0eT0iMC44Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzE0MUEyNCIgc3RvcC1vcGFjaXR5PSIwLjgiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgoKICA8IS0tIEJhY2tncm91bmQgQ2FyZCAtLT4KICA8cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNjAwIiBoZWlnaHQ9IjYwMCIgcng9IjE0MCIgZmlsbD0idXJsKCNiZ19nKSIvPgogIDxyZWN0IHg9IjIiIHk9IjIiIHdpZHRoPSI1OTYiIGhlaWdodD0iNTk2IiByeD0iMTM4IiBmaWxsPSJub25lIiBzdHJva2U9InVybCgjYm9yZGVyX2cpIiBzdHJva2Utd2lkdGg9IjIiLz4KCiAgPCEtLSBBbWJpZW50IEdsb3cgYmVoaW5kIHRoZSBkaWFtb25kIC0tPgogIDxjaXJjbGUgY3g9IjMwMCIgY3k9IjI4OCIgcj0iMTgwIiBmaWxsPSJ1cmwoI2dsb3dfZykiIC8+CgogIDwhLS0gRGlhbW9uZCBMb2dvIEdyb3VwIChDZW50ZXJlZCkgLS0+CiAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNDQsIDMyKSI+CiAgICAKICAgIDwhLS0gTGVmdCBMYXJnZSBGYWNldCAtLT4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDExMiAxNTYsMjU2IDI1Niw0MDAiIGZpbGw9InVybCgjdGVhbF9nKSIvPgogICAgCiAgICA8IS0tIFJpZ2h0IExhcmdlIEZhY2V0IC0tPgogICAgPHBvbHlnb24gcG9pbnRzPSIyNTYsMTEyIDM1NiwyNTYgMjU2LDQwMCIgZmlsbD0idXJsKCN2aW9sZXRfZykiLz4KICAgIAogICAgPCEtLSBCb3R0b20gTGVmdCBEYXJrIEZhY2V0IC0tPgogICAgPHBvbHlnb24gcG9pbnRzPSIxNTYsMjU2IDI1Niw0MDAgMjU2LDMwMCIgZmlsbD0idXJsKCN0ZWFsX2RhcmspIiBvcGFjaXR5PSIwLjg1Ii8+CiAgICAKICAgIDwhLS0gQm90dG9tIFJpZ2h0IERhcmsgRmFjZXQgLS0+CiAgICA8cG9seWdvbiBwb2ludHM9IjM1NiwyNTYgMjU2LDQwMCAyNTYsMzAwIiBmaWxsPSJ1cmwoI3Zpb2xldF9kYXJrKSIgb3BhY2l0eT0iMC44NSIvPgogICAgCiAgICA8IS0tIFRvcCBMZWZ0IFNtYWxsIEhpZ2hsaWdodCAtLT4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDExMiAyMTAsMTgyIDI1NiwyMjQiIGZpbGw9IiMwMEY1RDQiIG9wYWNpdHk9IjAuOSIvPgogICAgCiAgICA8IS0tIFRvcCBSaWdodCBTbWFsbCBIaWdobGlnaHQgLS0+CiAgICA8cG9seWdvbiBwb2ludHM9IjI1NiwxMTIgMzAyLDE4MiAyNTYsMjI0IiBmaWxsPSIjQzRCNUZEIiBvcGFjaXR5PSIwLjkiLz4KCiAgICA8IS0tIEdsYXNzIFJlZmxlY3Rpb24gRWZmZWN0IChPcHRpb25hbCwgYWRkcyBhIDNEIGdlbSBsb29rKSAtLT4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDExMiAyMDAsMTYwIDI1NiwyNDAiIGZpbGw9InVybCgjZ2xhc3NfZykiIG9wYWNpdHk9IjAuMTUiIC8+CiAgICAKICAgIDwhLS0gSW5uZXIgRGlhbW9uZCBFZGdlIEhpZ2hsaWdodHMgZm9yIFN0cnVjdHVyZSAtLT4KICAgIDxwYXRoIGQ9Ik0yNTYsMTEyIEwyNTYsNDAwIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS1vcGFjaXR5PSIwLjEiIHN0cm9rZS13aWR0aD0iMS41IiAvPgogICAgPHBhdGggZD0iTTE1NiwyNTYgTDM1NiwyNTYiIHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLW9wYWNpdHk9IjAuMSIgc3Ryb2tlLXdpZHRoPSIxLjUiIC8+CiAgICA8cGF0aCBkPSJNMjU2LDExMiBMMjEwLDE4MiBMMjU2LDIyNCBMMzAyLDE4MiBaIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS1vcGFjaXR5PSIwLjIiIHN0cm9rZS13aWR0aD0iMSIgZmlsbD0ibm9uZSIgLz4KCiAgPC9nPgo8L3N2Zz4='
 
 // ────────────────────────────────────────────────────────────────────────
 
@@ -135,14 +135,14 @@ async function renderCertPdf(data) {
 // Shared certificate design tokens — per-level metal palette. Keep this in
 // sync with frontend/src/components/certificates/CertificateCard.tsx
 // LEVEL_METAL so the downloaded PDF always matches the on-screen preview.
-// Level controls the SEAL COLOR (gold/silver/bronze = Advanced/Intermediate/Beginner).
+// Level controls the SEAL RING COLOR (gold/silver/bronze = Advanced/Intermediate/Beginner).
 const LEVEL_METAL = {
   Advanced:     { sealFrom: '#fcd34d', sealMid: '#d97706', sealTo: '#92400e' },
   Intermediate: { sealFrom: '#e2e8f0', sealMid: '#64748b', sealTo: '#334155' },
   Beginner:     { sealFrom: '#f0b27a', sealMid: '#b87333', sealTo: '#7a4b1f' }
 }
 
-// Per-type certificate theme — controls ACCENT COLOR, ICON, SUBTITLE, and
+// Per-type certificate theme — controls ACCENT COLOR, SUBTITLE, and
 // WATERMARK so a SkillCert and a ProjCert are unmistakable at a glance, even
 // before reading a word. Keep this in sync with
 // frontend/src/components/certificates/CertificateCard.tsx TYPE_THEME.
@@ -153,9 +153,7 @@ const TYPE_THEME = {
     accent: '#1d4ed8',
     accentSoft: 'rgba(29,78,216,0.12)',
     subtitle: 'Of Proficiency',
-    watermark: 'SKILL ASSESSMENT',
-    // shield + checkmark
-    iconPaths: '<path d="M12 3.2l6.2 2.3v5.1c0 4.6-2.7 8-6.2 9.2-3.5-1.2-6.2-4.6-6.2-9.2V5.5L12 3.2z"/><path d="M8.7 12.4l2.3 2.3 4.3-4.6"/>'
+    watermark: 'SKILL ASSESSMENT'
   },
   project_eval: {
     label: 'ProjCert',
@@ -163,9 +161,7 @@ const TYPE_THEME = {
     accent: '#b45309',
     accentSoft: 'rgba(180,83,9,0.12)',
     subtitle: 'Of Project Excellence',
-    watermark: 'PROJECT EVALUATION',
-    // drafting compass
-    iconPaths: '<path d="M12 4.2v3.4"/><circle cx="12" cy="4.2" r="1.3" fill="#ffffff"/><path d="M12 7.6L7.6 19M12 7.6L16.4 19"/><path d="M9.2 15.2h5.6"/>'
+    watermark: 'PROJECT EVALUATION'
   },
   combo_cert: {
     label: 'ComboCert',
@@ -173,9 +169,7 @@ const TYPE_THEME = {
     accent: '#0f766e',
     accentSoft: 'rgba(15,118,110,0.12)',
     subtitle: 'Of Comprehensive Achievement',
-    watermark: 'COMBINED CERTIFICATION',
-    // twin stars
-    iconPaths: '<path d="M8.2 4.6l1.1 2.3 2.5.9-2.5.9-1.1 2.3-1.1-2.3-2.5-.9 2.5-.9 1.1-2.3z"/><path d="M15.8 10.2l1.1 2.3 2.5.9-2.5.9-1.1 2.3-1.1-2.3-2.5-.9 2.5-.9 1.1-2.3z"/>'
+    watermark: 'COMBINED CERTIFICATION'
   }
 }
 
@@ -202,6 +196,24 @@ function getCertDescription(type, level, domain) {
     conceptual understanding and practical command of core principles.`
 }
 
+// Verification base URL — the printed/PDF link always points here so a
+// downloaded certificate is verifiable even outside the app.
+const VERIFY_BASE_URL = 'https://proeva.dev/certificate'
+
+// Four corner flourishes for the ornate frame. Drawn once and reused with a
+// CSS transform (mirrored/flipped) for the other three corners, so all four
+// stay perfectly symmetric and only need one path to maintain.
+function cornerFlourishSVG(accent) {
+  return `<svg viewBox="0 0 90 90" xmlns="http://www.w3.org/2000/svg" fill="none">
+    <path d="M6 60 L6 20 Q6 6 20 6 L60 6" stroke="${accent}" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M6 34 Q22 34 22 18" stroke="${accent}" stroke-width="1.3" opacity="0.55" stroke-linecap="round"/>
+    <path d="M34 6 Q34 22 18 22" stroke="${accent}" stroke-width="1.3" opacity="0.55" stroke-linecap="round"/>
+    <circle cx="6" cy="6" r="4" fill="${accent}"/>
+    <circle cx="6" cy="46" r="2" fill="${accent}" opacity="0.6"/>
+    <circle cx="46" cy="6" r="2" fill="${accent}" opacity="0.6"/>
+  </svg>`
+}
+
 function buildCertHTML(data) {
   const { userName, domain, level, score, type, verificationId, projectTitle, issuedDate, difficulty, metadata } = data
   const metal = LEVEL_METAL[level] || LEVEL_METAL.Advanced
@@ -216,12 +228,14 @@ function buildCertHTML(data) {
   // a certificate that looks unissued.
   const holderName = userName || 'Certificate Holder'
   const description = getCertDescription(type, level, domain)
+  const verifyUrl = `${VERIFY_BASE_URL}/${verificationId || ''}`
+  const flourish = cornerFlourishSVG(theme.accent)
 
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Cinzel:wght@400;600;700&family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=UnifrakturMaguntia&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Cinzel:wght@400;600;700&family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body {
@@ -273,77 +287,67 @@ function buildCertHTML(data) {
       white-space: nowrap;
     }
 
-    /* The dark navy ribbon running down the left side */
-    .vertical-ribbon {
+    /* Ornate double-line frame + four corner flourishes, all in the
+       certificate's accent colour so the border reads as one design with
+       the seal and top stripe. */
+    .ornate-frame {
       position: absolute;
-      top: 0;
-      left: 80px;
-      width: 45px;
-      height: 100%;
-      background-color: #0f172a;
-      z-index: 1;
-    }
-
-    /* Metallic badge overlapping the ribbon — colour follows LEVEL,
-       icon inside follows TYPE */
-    .gold-seal {
-      position: absolute;
-      top: 110px;
-      left: 52px;
-      width: 100px;
-      height: 100px;
-      background: radial-gradient(circle, ${metal.sealFrom} 0%, ${metal.sealMid} 70%, ${metal.sealTo} 100%);
-      border-radius: 50%;
-      border: 4px solid #0f172a;
-      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+      inset: 22px;
+      border: 2px solid ${theme.accent};
+      opacity: 0.55;
       z-index: 2;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      pointer-events: none;
     }
-
-    .gold-seal::after {
+    .ornate-frame::after {
       content: '';
-      width: 76px;
-      height: 76px;
-      border: 1.5px dashed rgba(255, 255, 255, 0.6);
-      border-radius: 50%;
       position: absolute;
+      inset: 7px;
+      border: 1px solid #0f172a;
+      opacity: 0.18;
     }
+    .corner-flourish {
+      position: absolute;
+      width: 90px;
+      height: 90px;
+      z-index: 3;
+      pointer-events: none;
+    }
+    .corner-flourish.tl { top: 20px; left: 20px; }
+    .corner-flourish.tr { top: 20px; right: 20px; transform: scaleX(-1); }
+    .corner-flourish.bl { bottom: 20px; left: 20px; transform: scaleY(-1); }
+    .corner-flourish.br { bottom: 20px; right: 20px; transform: scale(-1,-1); }
 
     .content {
       position:absolute;
       inset: 0;
-      padding-left: 200px;
-      padding-right: 80px;
+      padding: 56px 110px;
       display:flex;
       flex-direction:column;
       justify-content: center;
-      align-items: flex-start;
+      align-items: center;
+      text-align: center;
       z-index: 1;
     }
 
-    /* Logo lockup: gem mark + wordmark, top-right corner */
+    /* Logo lockup: gem mark + wordmark, centered at top */
     .brand-name {
-      position: absolute;
-      top: 50px;
-      right: 80px;
       display: flex;
       align-items: center;
+      justify-content: center;
       gap: 10px;
-      z-index: 2;
+      margin-bottom: 14px;
     }
 
     .brand-logo {
-      width: 34px;
-      height: 34px;
-      border-radius: 9px;
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
       display: block;
     }
 
     .brand-wordmark {
       font-family: 'Cinzel', serif;
-      font-size: 26px;
+      font-size: 22px;
       font-weight: 700;
       letter-spacing: 2px;
       color: #0f172a;
@@ -351,14 +355,47 @@ function buildCertHTML(data) {
 
     .brand-wordmark span { color: #d97706; }
 
+    /* Seal / badge medallion — the ring colour follows the LEVEL (metal),
+       the mark inside is always the Proeva gem logo, so every certificate
+       carries the actual brand mark on its badge, not a generic icon. */
+    .seal-medallion {
+      width: 96px;
+      height: 96px;
+      border-radius: 50%;
+      background: radial-gradient(circle, ${metal.sealFrom} 0%, ${metal.sealMid} 70%, ${metal.sealTo} 100%);
+      border: 4px solid #0f172a;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 18px;
+      position: relative;
+    }
+    .seal-medallion::after {
+      content: '';
+      position: absolute;
+      width: 74px;
+      height: 74px;
+      border: 1.5px dashed rgba(255,255,255,0.6);
+      border-radius: 50%;
+    }
+    .seal-logo {
+      width: 54px;
+      height: 54px;
+      border-radius: 12px;
+      position: relative;
+      z-index: 1;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+
     .main-title {
-      font-family: 'Playfair Display', serif;
-      font-size: 76px;
+      font-family: 'UnifrakturMaguntia', 'Playfair Display', serif;
+      font-size: 62px;
       font-weight: 400;
-      font-style: italic;
       color: #0f172a;
-      line-height: 1;
-      margin-bottom: -3px;
+      line-height: 1.1;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
     }
 
     .sub-title-box {
@@ -368,7 +405,7 @@ function buildCertHTML(data) {
       font-size: 13px;
       font-weight: 600;
       letter-spacing: 5px;
-      padding: 5px 20px 4px 24px;
+      padding: 5px 22px 4px 26px;
       text-transform: uppercase;
       margin-bottom: 14px;
       display: inline-block;
@@ -390,7 +427,7 @@ function buildCertHTML(data) {
       color: ${theme.accent};
       background: ${theme.accentSoft};
       border: 1px solid ${theme.accent};
-      margin-bottom: 26px;
+      margin-bottom: 24px;
     }
 
     .type-badge .dot {
@@ -412,10 +449,10 @@ function buildCertHTML(data) {
       font-weight: 700;
       color: #0f172a;
       border-bottom: 2px solid ${theme.accent};
-      padding-bottom: 4px;
-      margin-bottom: 20px;
-      width: 100%;
-      max-width: 550px;
+      padding-bottom: 6px;
+      margin-bottom: 22px;
+      display: inline-block;
+      max-width: 600px;
     }
 
     .details-text {
@@ -423,8 +460,8 @@ function buildCertHTML(data) {
       font-size: 19px;
       line-height: 1.6;
       color: #475569;
-      margin-bottom: 8px;
-      max-width: 650px;
+      margin: 0 auto 8px;
+      max-width: 620px;
     }
 
     .details-text strong {
@@ -438,7 +475,7 @@ function buildCertHTML(data) {
       font-style: italic;
       font-size: 14px;
       color: ${theme.accent};
-      margin-bottom: 30px;
+      margin-bottom: 26px;
     }
 
     .bottom-meta {
@@ -446,14 +483,15 @@ function buildCertHTML(data) {
       max-width: 760px;
       display: flex;
       flex-wrap: wrap;
-      gap: 32px;
-      justify-content: space-between;
-      align-items: flex-end;
+      gap: 40px;
+      justify-content: center;
+      align-items: flex-start;
       border-top: 1px solid #e2e8f0;
       padding-top: 16px;
+      margin-top: 10px;
     }
 
-    .meta-block { display: flex; flex-direction: column; gap: 4px; }
+    .meta-block { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 
     .meta-lbl {
       font-family: 'Cinzel', sans-serif;
@@ -478,11 +516,18 @@ function buildCertHTML(data) {
     }
 
     .authority-line {
-      margin-top: 10px;
+      margin-top: 12px;
       font-family: 'EB Garamond', serif;
       font-style: italic;
-      font-size: 11px;
+      font-size: 12px;
       color: #94a3b8;
+    }
+
+    .authority-line a {
+      color: ${theme.accent};
+      text-decoration: none;
+      font-style: normal;
+      font-weight: 600;
     }
   </style>
 </head>
@@ -490,17 +535,20 @@ function buildCertHTML(data) {
 <div class="page">
   <div class="accent-bar"></div>
   <div class="watermark">${theme.watermark}</div>
-  <div class="vertical-ribbon"></div>
-  <div class="gold-seal">
-     <svg width="45" height="45" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.25">
-       ${theme.iconPaths}
-     </svg>
-  </div>
+  <div class="ornate-frame"></div>
+  <div class="corner-flourish tl">${flourish}</div>
+  <div class="corner-flourish tr">${flourish}</div>
+  <div class="corner-flourish bl">${flourish}</div>
+  <div class="corner-flourish br">${flourish}</div>
 
   <div class="content">
     <div class="brand-name">
       <img class="brand-logo" src="${LOGO_DATA_URI}" alt="Proeva" />
       <span class="brand-wordmark"><span>Proeva</span></span>
+    </div>
+
+    <div class="seal-medallion">
+      <img class="seal-logo" src="${LOGO_DATA_URI}" alt="Proeva seal" />
     </div>
 
     <div class="main-title">Certificate</div>
@@ -513,28 +561,28 @@ function buildCertHTML(data) {
     <div class="details-text">
       ${description}
     </div>
-    ${extraLine ? `<div class="extra-line">${extraLine}</div>` : '<div style="margin-bottom:30px"></div>'}
+    ${extraLine ? `<div class="extra-line">${extraLine}</div>` : '<div style="margin-bottom:26px"></div>'}
 
     <div class="bottom-meta">
       <div class="meta-block">
         <span class="meta-lbl">Date Issued</span>
         <span class="meta-val">${issuedDate}</span>
       </div>
-      <div class="meta-block" style="align-items: center;">
+      <div class="meta-block">
         <span class="meta-lbl">Score Achieved</span>
         <span class="meta-val">${score} / 100</span>
       </div>
       ${difficultyLabel ? `
-      <div class="meta-block" style="align-items: center;">
+      <div class="meta-block">
         <span class="meta-lbl">Difficulty</span>
         <span class="meta-val">${difficultyLabel}</span>
       </div>` : ''}
-      <div class="meta-block" style="text-align: right; align-items: flex-end;">
+      <div class="meta-block">
         <span class="meta-lbl">Certificate Number</span>
         <span class="v-id">${verificationId || '0000'}</span>
       </div>
     </div>
-    <div class="authority-line">Issued by Proeva Assessment Authority &middot; Verifiable at proeva.io/verify</div>
+    <div class="authority-line">Issued by Proeva Assessment Authority &middot; Verify at <a href="${verifyUrl}">${verifyUrl}</a></div>
   </div>
 </div>
 </body>
