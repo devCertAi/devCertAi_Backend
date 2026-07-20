@@ -288,14 +288,22 @@ const getAttempt = asyncHandler(async (req, res) => {
   // their result, and the correct-answer breakdown is exactly what powers
   // that review (see evaluationReport for Phase 1/2 wrong-answer detail).
   const stillActive = attempt.status === 'in_progress' || attempt.status === 'pending'
+  const isPipeline = attempt.source === 'pipeline'
   const safeAttempt = {
     ...attempt,
+    // For pipeline exams, hide scores and evaluation from the candidate
+    // (recruiter still sees them in the pipeline dashboard)
+    totalScore: isPipeline ? null : attempt.totalScore,
+    level: isPipeline ? null : attempt.level,
+    evaluationReport: isPipeline ? null : attempt.evaluationReport,
     questions: (attempt.questions || []).map(q => {
       if (!stillActive) return q
       const { answer, ...safe } = q
       return safe
     }),
-    otherPhase: otherPhaseInfo
+    otherPhase: otherPhaseInfo,
+    // Pipeline exams show a generic "under review" message instead of scores
+    pipelineExam: isPipeline
   }
 
   return res.json(new ApiResponse(200, { attempt: safeAttempt }))
@@ -727,7 +735,12 @@ const getExamHistory = asyncHandler(async (req, res) => {
   ])
 
   return res.json(new ApiResponse(200, {
-    attempts,
+    attempts: attempts.map(a => ({
+      ...a,
+      // Hide scores for pipeline exams (recruiter sees them, candidate doesn't)
+      totalScore: a.source === 'pipeline' ? null : a.totalScore,
+      level: a.source === 'pipeline' ? null : a.level,
+    })),
     pagination: {
       total,
       page: parseInt(page),
@@ -743,7 +756,7 @@ const getDomains = asyncHandler(async (req, res) => {
   const userId = req.user.id
 
   const attempts = await prisma.examAttempt.findMany({
-    where: { userId, status: 'completed', source: { not: 'demo' } },
+    where: { userId, status: 'completed', source: { notIn: ['demo', 'pipeline'] } },
     select: { domain: true, phase: true, totalScore: true }
   })
 

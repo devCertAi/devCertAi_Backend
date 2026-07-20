@@ -166,7 +166,10 @@ async function finalizeAttempt(attempt, { totalScore, level, evaluationReport })
   } catch (_) {}
 
   // Demo attempts are throwaway practice — no certificate, email, or notification.
-  if (attempt.source === 'demo') return
+  // Pipeline exams (recruiter-invited) also skip candidate-facing results —
+  // the recruiter sees scores in the pipeline dashboard, the candidate
+  // only gets a generic "under review" status.
+  if (attempt.source === 'demo' || attempt.source === 'pipeline') return
 
   const passed = finalStatus !== 'terminated' && isPassing(totalScore)
 

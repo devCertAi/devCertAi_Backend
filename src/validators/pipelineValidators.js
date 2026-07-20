@@ -12,7 +12,7 @@ const scoringWeightsSchema = z.object({
   examScore:    z.number().min(0).max(100).optional()
 }).optional()
 
-const EXAM_DOMAINS = ['Frontend', 'Backend', 'Full Stack', 'Mobile', 'Data Science', 'DevOps', 'Blockchain', 'AI/ML']
+const EXAM_DOMAINS = ['Frontend', 'Backend', 'Full Stack', 'Mobile', 'Data Science', 'DevOps', 'Programming Languages', 'Blockchain', 'AI/ML']
 
 const createJobPostingSchema = z.object({
   title:            z.string().min(3).max(150),
@@ -44,8 +44,17 @@ const createJobPostingSchema = z.object({
   examPhase1:      z.boolean().optional().default(true),
   examPhase2:      z.boolean().optional().default(false),
   examDomain:      z.enum(EXAM_DOMAINS).optional().default('Full Stack'),
+  examCategory:    z.string().optional(),
+  examCategories:  z.array(z.string()).optional(),
+  examDifficulty:  z.enum(['easy', 'medium', 'hard', 'mixed']).optional().default('mixed'),
   examDurationMin: z.number().int().min(5).max(180).optional().default(30),
   examWindowHours: z.number().int().min(1).max(168).optional().default(48),
+
+  // Application deadline
+  applicationDeadline: z.union([z.string().datetime({ offset: true }), z.literal(''), z.null()]).optional()
+    .refine(v => !v || v === '' || v === null || new Date(v) > new Date(), {
+      message: 'Application deadline must be in the future'
+    }),
 
   // Manual pipeline mode
   manualMode: z.boolean().optional().default(false),
@@ -102,8 +111,15 @@ const updateJobPostingSchema = z.object({
   examPhase1:      z.boolean().optional(),
   examPhase2:      z.boolean().optional(),
   examDomain:      z.enum(EXAM_DOMAINS).optional(),
+  examCategory:    z.string().optional(),
+  examCategories:  z.array(z.string()).optional(),
+  examDifficulty:  z.enum(['easy', 'medium', 'hard', 'mixed']).optional(),
   examDurationMin: z.number().int().min(5).max(180).optional(),
   examWindowHours: z.number().int().min(1).max(168).optional(),
+  applicationDeadline: z.union([z.string().datetime({ offset: true }), z.literal(''), z.null()]).optional()
+    .refine(v => !v || v === '' || v === null || new Date(v) > new Date(), {
+      message: 'Application deadline must be in the future'
+    }),
   manualMode:      z.boolean().optional(),
   matchNotificationCap: z.number().int().min(0).max(2000).optional(),
   scoringWeights:       scoringWeightsSchema,

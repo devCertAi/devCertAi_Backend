@@ -76,10 +76,7 @@ const createPosting = asyncHandler(async (req, res) => {
 
   const company = await prisma.company.findUnique({ where: { recruiterId: req.user.id } })
   if (!company) throw new ApiError(403, 'Create your company before posting a job')
-
-  if (data.status === 'active' && company.verificationStatus !== 'verified') {
-    throw new ApiError(403, 'Your company must be verified before publishing a job posting. Submit your company for verification from Settings.')
-  }
+  if (company.verificationStatus !== 'verified') throw new ApiError(403, 'Your company must be verified before publishing a job posting. Submit your company for verification from Settings.')
 
   const applyLinkSlug = await generateUniqueSlug(data.title)
 
@@ -106,8 +103,12 @@ const createPosting = asyncHandler(async (req, res) => {
         examPhase1: data.examPhase1,
         examPhase2: data.examPhase2,
         examDomain: data.examDomain,
+        examCategory: data.examCategory,
+        examCategories: data.examCategories || undefined,
+        examDifficulty: data.examDifficulty || 'mixed',
         examDurationMin: data.examDurationMin,
         examWindowHours: data.examWindowHours,
+        applicationDeadline: data.applicationDeadline ? new Date(data.applicationDeadline) : null,
         manualMode: data.manualMode,
         matchNotificationCap: data.matchNotificationCap,
         scoringWeights: data.scoringWeights || undefined,
@@ -195,7 +196,6 @@ const updatePosting = asyncHandler(async (req, res) => {
   const data = req.body
   const wasActive = posting.status === 'active'
 
-  // Gate: drafts can only flip to "active" once the recruiter's company is verified.
   if (posting.status === 'draft' && data.status === 'active') {
     const company = await prisma.company.findUnique({ where: { recruiterId: req.user.id } })
     if (!company || company.verificationStatus !== 'verified') {
@@ -225,8 +225,14 @@ const updatePosting = asyncHandler(async (req, res) => {
       examPhase1: data.examPhase1 ?? posting.examPhase1,
       examPhase2: data.examPhase2 ?? posting.examPhase2,
       examDomain: data.examDomain ?? posting.examDomain,
+      examCategory: data.examCategory ?? posting.examCategory,
+      examCategories: data.examCategories ?? posting.examCategories,
+      examDifficulty: data.examDifficulty ?? posting.examDifficulty,
       examDurationMin: data.examDurationMin ?? posting.examDurationMin,
       examWindowHours: data.examWindowHours ?? posting.examWindowHours,
+      applicationDeadline: data.applicationDeadline !== undefined
+        ? (data.applicationDeadline ? new Date(data.applicationDeadline) : null)
+        : posting.applicationDeadline,
       manualMode: data.manualMode ?? posting.manualMode,
       matchNotificationCap: data.matchNotificationCap ?? posting.matchNotificationCap,
       scoringWeights: data.scoringWeights ?? posting.scoringWeights,
@@ -303,6 +309,7 @@ const clonePosting = asyncHandler(async (req, res) => {
         examPhase1: posting.examPhase1,
         examPhase2: posting.examPhase2,
         examDomain: posting.examDomain,
+        examCategory: posting.examCategory,
         examDurationMin: posting.examDurationMin,
         examWindowHours: posting.examWindowHours,
         manualMode: posting.manualMode,
@@ -351,6 +358,11 @@ const getPublicPosting = asyncHandler(async (req, res) => {
 const submitApplication = asyncHandler(async (req, res) => {
   const posting = await prisma.jobPosting.findUnique({ where: { applyLinkSlug: req.params.slug } })
   if (!posting || posting.status !== 'active') throw new ApiError(404, 'This job posting is not available')
+
+  // Block applications after deadline has passed
+  if (posting.applicationDeadline && new Date(posting.applicationDeadline) <= new Date()) {
+    throw new ApiError(403, 'The application deadline for this posting has passed. No new applications are being accepted.')
+  }
 
   const existing = await prisma.application.findUnique({
     where: { jobPostingId_userId: { jobPostingId: posting.id, userId: req.user.id } }
