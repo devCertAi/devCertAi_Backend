@@ -36,7 +36,15 @@ const getMyApplications = asyncHandler(async (req, res) => {
   ])
 
   return res.json(new ApiResponse(200, {
-    applications,
+    applications: applications.map(a => ({
+      ...a,
+      // Hide internal scoring from the candidate — they see stage/status only
+      ruleScore: null,
+      aiMatchScore: null,
+      projectScore: null,
+      examScore: null,
+      finalScore: null,
+    })),
     pagination: { total, page: parseInt(page), limit: parseInt(limit), pages: Math.ceil(total / parseInt(limit)) }
   }))
 })
@@ -49,6 +57,13 @@ const getApplication = asyncHandler(async (req, res) => {
   })
   if (!application) throw new ApiError(404, 'Application not found')
   if (application.resumeUrl) application.resumeUrl = signRawUrl(application.resumeUrl)
+
+  // Hide internal scoring from the candidate — they see stage/status only
+  application.ruleScore = null
+  application.aiMatchScore = null
+  application.projectScore = null
+  application.examScore = null
+  application.finalScore = null
 
   let project = null
   if (application.projectId) {

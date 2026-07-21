@@ -395,8 +395,13 @@ model JobPosting {
   examPhase1      Boolean @default(true)
   examPhase2      Boolean @default(false)
   examDomain      String  @default("Full Stack")
+  examCategory    String?
+  examCategories  Json?
+  examDifficulty  String  @default("mixed")
   examDurationMin Int     @default(30)
   examWindowHours Int     @default(48)
+
+  applicationDeadline DateTime?
 
   manualMode       Boolean @default(false)
   hiringCreditUsed Boolean @default(false)

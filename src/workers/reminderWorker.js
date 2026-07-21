@@ -16,6 +16,7 @@ const cron = require('node-cron')
 const prisma = require('../config/database')
 const queues = require('../queues')
 const { defaultOpts } = queues
+const { processDeadlineApplications } = require('../services/pipelineService')
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -114,11 +115,54 @@ async function autoRejectExpired(now) {
   }
 }
 
+// ── retry stuck pipeline applications ───────────────────────────────────────
+
+async function retryStuckPipelineApplications() {
+  // Applications stuck at 'screened' with a pipelineError — retry by
+  // re-enqueuing stage1 which will re-trigger advanceAfterScreening.
+  const stuck = await prisma.application.findMany({
+    where: {
+      stage: 'screened',
+      status: 'in_progress',
+      pipelineError: { not: null },
+      examAttemptId: null,
+    },
+    select: { id: true, pipelineError: true },
+    take: 10,
+  })
+
+  for (const app of stuck) {
+    console.log(`[reminderWorker] Retrying stuck application ${app.id} (was: ${app.pipelineError})`)
+    // Clear the error before retrying
+    await prisma.application.update({
+      where: { id: app.id },
+      data: { pipelineError: null },
+    })
+    // Clear cached question bank on the posting so ensureQuestionBank re-queries
+    const full = await prisma.application.findUnique({
+      where: { id: app.id },
+      select: { jobPostingId: true },
+    })
+    if (full) {
+      await prisma.jobPosting.update({
+        where: { id: full.jobPostingId },
+        data: { questionBank: [] },
+      })
+    }
+    await queues.applicationQueue.add(
+      { applicationId: app.id, action: 'stage1_screen' },
+      defaultOpts
+    )
+  }
+}
+
 // ── main task ────────────────────────────────────────────────────────────────
 
 async function runPipelineReminders() {
   const now = new Date()
   try {
+    await processDeadlineApplications()
+    await retryStuckPipelineApplications()
     await sendAssignmentReminders(now)
     await sendExamReminders(now)
     await autoRejectExpired(now)

@@ -129,6 +129,11 @@ async function createApplication({ jobPostingId, userId, resumeUrl, coverNote })
   })
   if (!jobPosting) throw new Error('Job posting not found')
 
+  // Block applications after deadline has passed
+  if (jobPosting.applicationDeadline && new Date(jobPosting.applicationDeadline) <= new Date()) {
+    throw new Error('The application deadline for this posting has passed. No new applications are being accepted.')
+  }
+
   const existing = await prisma.application.findUnique({
     where: { jobPostingId_userId: { jobPostingId, userId } }
   })
@@ -169,6 +174,15 @@ async function createApplication({ jobPostingId, userId, resumeUrl, coverNote })
   // Skill match notification — check if candidate skills match job requirements
   try { await checkAndNotifySkillMatch(application.id, userId, jobPosting) } catch {}
 
+  // Check application deadline — delay pipeline start if deadline not reached
+  if (jobPosting.applicationDeadline) {
+    const deadline = new Date(jobPosting.applicationDeadline)
+    if (deadline > new Date()) {
+      // Don't start pipeline yet — will be picked up by deadline worker
+      return application
+    }
+  }
+
   try {
     await queues.applicationQueue.add({ applicationId: application.id, action: 'stage1_screen' }, defaultOpts)
   } catch {}
@@ -197,6 +211,37 @@ async function checkAndNotifySkillMatch(applicationId, userId, jobPosting) {
       })
     }
   } catch {}
+}
+
+// ─── Deadline processing — start pipelines after deadline passes ──────────────
+
+async function processDeadlineApplications() {
+  const now = new Date()
+  const postings = await prisma.jobPosting.findMany({
+    where: {
+      status: 'active',
+      applicationDeadline: { not: null, lte: now }
+    }
+  })
+
+  for (const posting of postings) {
+    const pendingApps = await prisma.application.findMany({
+      where: {
+        jobPostingId: posting.id,
+        stage: 'applied'
+      }
+    })
+    for (const app of pendingApps) {
+      try {
+        await queues.applicationQueue.add({ applicationId: app.id, action: 'stage1_screen' }, defaultOpts)
+      } catch {}
+    }
+    // Clear deadline after processing
+    await prisma.jobPosting.update({
+      where: { id: posting.id },
+      data: { applicationDeadline: null }
+    })
+  }
 }
 
 // ─── Stage 1 — Rule-based screening ──────────────────────────────────────────
@@ -324,7 +369,23 @@ async function advanceAfterScreening(applicationId) {
   if (jp.assignmentEnabled && jp.assignmentBrief) {
     await moveToAssignmentSent(applicationId)
   } else if (jp.examEnabled) {
-    await moveToExamPhase1Sent(applicationId)
+    try {
+      await moveToExamPhase1Sent(applicationId)
+    } catch (err) {
+      console.error(`[Pipeline] Exam creation failed for application ${applicationId}:`, err.message)
+      // Record the error so the application isn't silently stuck — recruiter
+      // can see the issue and retry, or the reminder worker can pick it up.
+      await prisma.application.update({
+        where: { id: applicationId },
+        data: { pipelineError: `Exam creation failed: ${err.message}` }
+      })
+      await notifyRecruiter(jp.recruiterId, {
+        type: 'manual_action_needed',
+        title: `⚠️ Assessment setup failed for ${application.user.name}`,
+        message: `Could not create exam for "${jp.title}": ${err.message}`,
+        data: { applicationId, stage: 'screened', jobPostingId: jp.id }
+      })
+    }
   } else {
     await markReadyForRanking(applicationId)
   }
@@ -490,40 +551,56 @@ async function ensureQuestionBank(jobPosting) {
     return jobPosting.questionBank
   }
 
-  const requiredSkills = jobPosting.requiredSkills.map(rs => rs.skill.name)
-  let bank = []
+  const LEVEL_MAP = { easy: 'Beginner', medium: 'Intermediate', hard: 'Expert' }
+  const difficulty = jobPosting.examDifficulty || 'mixed'
+  const categories = jobPosting.examCategories || (jobPosting.examCategory ? [jobPosting.examCategory] : [])
+  const domain = jobPosting.examDomain || 'Full Stack'
 
-  try {
-    const raw = await callAIForJSON({
-      systemPrompt: PROMPTS.MCQ_BANK_GEN_SYSTEM,
-      userPrompt: PROMPTS.MCQ_BANK_GEN_USER({
-        title: jobPosting.title,
-        requiredSkills,
-        domain: jobPosting.examDomain || 'Full Stack',
-        minExperience: jobPosting.minExperience,
-        description: jobPosting.description,
-        count: 40
-      }),
-      maxTokens: 4000,
-      temperature: 0.4
-    })
-    if (Array.isArray(raw)) {
-      bank = raw
-        .filter(q => q?.question && Array.isArray(q.options) && q.options.length === 4 && q.answer)
-        .map((q, i) => ({
-          id: `bank_${i}`,
-          question: q.question,
-          options: q.options,
-          answer: q.answer,
-          topic: q.topic || '',
-          level: ['Beginner', 'Intermediate', 'Advanced'].includes(q.level) ? q.level : 'Intermediate',
-          type: 'mcq'
-        }))
-    }
-  } catch (err) {
-    console.error(`[Pipeline] MCQ bank generation failed:`, err.message)
+  // Always filter by the recruiter's selected categories — never mix in
+  // questions from unrelated categories (e.g. React questions for a Node.js exam).
+  const categoryFilter = categories.length > 0 ? { category: { in: categories } } : {}
+
+  const where = {
+    domain,
+    phase: 1,
+    isActive: true,
+    ...categoryFilter
   }
 
+  // Apply difficulty filter unless mixed
+  if (difficulty !== 'mixed' && LEVEL_MAP[difficulty]) {
+    where.level = LEVEL_MAP[difficulty]
+  }
+
+  let rows = await prisma.questionBank.findMany({ where })
+
+  // If not enough with strict difficulty, drop difficulty but KEEP category filter
+  if (rows.length < SHARED_BANK_QUESTIONS_PER_EXAM && difficulty !== 'mixed') {
+    const fallback = { domain, phase: 1, isActive: true, ...categoryFilter }
+    rows = await prisma.questionBank.findMany({ where: fallback })
+  }
+
+  const label = categories.length > 0
+    ? `${domain} / ${categories.join(',')}`
+    : `${domain} (all)`
+
+  if (rows.length > 0) {
+    console.log(`[QuestionBank] Selected ${rows.length} questions from: ${label}`)
+  }
+
+  const bank = rows.map(q => ({
+    id: q.id,
+    question: q.question,
+    options: Array.isArray(q.options) ? q.options : [],
+    answer: q.answer,
+    topic: q.category || '',
+    level: q.level,
+    type: 'mcq'
+  }))
+
+  // Cache on the posting so we don't re-query on every subsequent call —
+  // this is a performance cache only; correctness for grading always goes
+  // back to the QuestionBank table (see gradePipelineExam).
   await prisma.jobPosting.update({ where: { id: jobPosting.id }, data: { questionBank: bank } })
   return bank
 }
@@ -532,12 +609,32 @@ async function moveToExamPhase1Sent(applicationId) {
   const application = await loadApplicationFull(applicationId)
   if (!application) return
 
+  // Idempotent: if an exam attempt already exists, just ensure stage is correct
+  if (application.examAttemptId) {
+    if (application.stage !== 'exam_sent') {
+      await prisma.application.update({
+        where: { id: applicationId },
+        data: { stage: 'exam_sent' }
+      })
+      await recordStageEvent(applicationId, 'exam_sent')
+    }
+    return
+  }
+
   const jp = await prisma.jobPosting.findUnique({
     where: { id: application.jobPosting.id },
     include: { requiredSkills: { include: { skill: true } } }
   })
 
   const bank = await ensureQuestionBank(jp)
+  if (bank.length < SHARED_BANK_QUESTIONS_PER_EXAM) {
+    throw new Error(
+      `Not enough active QuestionBank entries for domain "${jp.examDomain || jp.title}"` +
+      (jp.examCategory ? ` / category "${jp.examCategory}"` : '') +
+      ` (phase 1) — need at least ${SHARED_BANK_QUESTIONS_PER_EXAM}, found ${bank.length}.`
+    )
+  }
+
   const sharedSubset = fishYatesShuffle(bank)
     .slice(0, Math.min(SHARED_BANK_QUESTIONS_PER_EXAM, bank.length))
     .map(q => ({ ...q, options: fishYatesShuffle(q.options) }))
@@ -591,10 +688,20 @@ async function gradePipelineExam(attempt) {
 
   let mcqScore = 0
   if (mcqQuestions.length > 0) {
+    const bankIds = mcqQuestions.map(q => q.id).filter(Boolean)
+    const bankRows = await prisma.questionBank.findMany({
+      where: { id: { in: bankIds } },
+      select: { id: true, answer: true }
+    })
+    const correctAnswerById = new Map(bankRows.map(r => [r.id, r.answer]))
+
     let correct = 0
     mcqQuestions.forEach(q => {
       const given = answers[q.id] ?? answers[questions.indexOf(q)] ?? answers[String(questions.indexOf(q))]
-      if (given === q.answer) correct++
+      // Fall back to the embedded answer only for legacy attempts created
+      // before the switch to the seeded bank (their ids won't resolve here).
+      const correctAnswer = correctAnswerById.has(q.id) ? correctAnswerById.get(q.id) : q.answer
+      if (given === correctAnswer) correct++
     })
     mcqScore = Math.round((correct / mcqQuestions.length) * 100)
   }
@@ -1235,6 +1342,7 @@ module.exports = {
   checkHiringCredit,
   consumeHiringCredit,
   sendRecruiterStageReminder,
+  processDeadlineApplications,
   notifyStudent,
   notifyRecruiter
 }
